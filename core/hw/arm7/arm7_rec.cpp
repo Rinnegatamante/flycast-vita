@@ -55,6 +55,8 @@ static u8 *ARM7_TCB;
 alignas(4096) static u8 ARM7_TCB[ICacheSize] __attribute__((section(".text")));
 #elif defined(__APPLE__)
 alignas(4096) static u8 ARM7_TCB[ICacheSize] __attribute__((section("__TEXT, .text")));
+#elif defined(VITA)
+alignas(4096) static u8 ARM7_TCB[ICacheSize] __attribute__((section(".text")));
 #else
 #error ARM7_TCB ALLOC
 #endif

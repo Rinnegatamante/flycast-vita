@@ -2217,6 +2217,8 @@ static void gui_display_settings()
 					"Windows"
 #elif defined(__SWITCH__)
 					"Switch"
+#elif defined(VITA)
+                    "PSVita"
 #else
 					"Unknown"
 #endif

@@ -81,7 +81,7 @@ private:
 	std::vector<RUNTIME_FUNCTION *> tables;
 	std::vector<u16> codes;
 #endif
-#if defined(__unix__) || defined(__APPLE__) || defined(__SWITCH__)
+#if defined(__unix__) || defined(__APPLE__) || defined(__SWITCH__) || defined(VITA)
 	int stackOffset = 0;
 	uintptr_t lastOffset = 0;
 	std::vector<u8> cieInstructions;
@@ -116,7 +116,10 @@ static inline void *allocAligned(size_t alignment, size_t size)
 #ifdef _WIN32
 	return _aligned_malloc(size, alignment);
 #elif defined(__SWITCH__)
-   return memalign(alignment, size);
+	return memalign(alignment, size);
+#elif defined(VITA)
+    //FIXME: No memalign on Vita.
+    return NULL;
 #else
 	void *data;
 	if (posix_memalign(&data, alignment, size) != 0)

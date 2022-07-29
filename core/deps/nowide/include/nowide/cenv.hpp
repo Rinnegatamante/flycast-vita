@@ -19,6 +19,24 @@
 #include <nowide/windows.hpp>
 #endif
 
+/*
+#ifdef VITA
+int setenv(const char *v_name, const char *v_value, int overwrite) {
+    return 0;
+}
+
+char *getenv(const char *name) {
+    return NULL;
+}
+
+int unsetenv(const char *name) {
+    return 0;
+}
+
+int putenv(char *envvar) {
+    return 0;
+}
+#endif*/
 
 namespace nowide {
     #if !defined(NOWIDE_WINDOWS) && !defined(NOWIDE_DOXYGEN)
