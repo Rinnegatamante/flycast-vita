@@ -116,7 +116,7 @@ static inline void *allocAligned(size_t alignment, size_t size)
 #ifdef _WIN32
 	return _aligned_malloc(size, alignment);
 #elif defined(__SWITCH__) || defined(__vita__)
-    return memalign(alignment, size);
+   return memalign(alignment, size);
 #else
 	void *data;
 	if (posix_memalign(&data, alignment, size) != 0)
