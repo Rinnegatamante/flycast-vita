@@ -1,6 +1,6 @@
 #pragma once
 #include "types.h"
-#if defined(__SWITCH__)
+#if defined(__SWITCH__) || defined(__vita__)
 #include <malloc.h>
 #endif
 
