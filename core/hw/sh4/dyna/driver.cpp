@@ -28,7 +28,7 @@ static u8 SH4_TCB[CODE_SIZE + TEMP_CODE_SIZE + 4096]
 	__attribute__((section(".text")));
 #elif defined(__APPLE__)
 	__attribute__((section("__TEXT,.text")));
-#elif defined(VITA)
+#elif defined(__vita__)
     __attribute__((section(".text")));
 #else
 	#error SH4_TCB ALLOC

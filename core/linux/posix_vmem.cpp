@@ -4,7 +4,7 @@
 // Android and OSX since they are slightly different in some areas.
 #include "types.h"
 
-#if !defined(__SWITCH__) && !defined(VITA)
+#if !defined(__SWITCH__) && !defined(__vita__)
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>

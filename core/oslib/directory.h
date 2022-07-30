@@ -252,7 +252,7 @@ public:
 					continue;
 				std::string childPath = pathnames.back() + "/" + currentItem.name;
 				bool isDir = false;
-#if !defined(_WIN32) && !defined(VITA)
+#if !defined(_WIN32) && !defined(__vita__)
 				if (direntry->d_type == DT_DIR)
 					isDir = true;
 				else if (direntry->d_type == DT_UNKNOWN || direntry->d_type == DT_LNK)

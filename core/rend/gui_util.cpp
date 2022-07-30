@@ -74,7 +74,7 @@ void select_file_popup(const char *prompt, StringCallback callback,
 		}
 #elif defined(__SWITCH__)
 		select_current_directory = "/";
-#elif defined(VITA)
+#elif defined(__vita__)
         select_current_directory = "ux0:/";
 #endif
 		if (select_current_directory.empty())
@@ -168,7 +168,7 @@ void select_file_popup(const char *prompt, StringCallback callback,
 							continue;
 						std::string child_path = path + "/" + name;
 						bool is_dir = false;
-#if !defined(_WIN32) && !defined(VITA)
+#if !defined(_WIN32) && !defined(__vita__)
 						if (entry->d_type == DT_DIR)
 							is_dir = true;
 						if (entry->d_type == DT_UNKNOWN || entry->d_type == DT_LNK)
@@ -192,7 +192,7 @@ void select_file_popup(const char *prompt, StringCallback callback,
 									is_dir = true;
 							}
 					    }
-#elif defined(VITA)
+#elif defined(__vita__)
                         struct stat st;
                         if (flycast::stat(child_path.c_str(), &st) != 0)
                             continue;
@@ -224,7 +224,7 @@ void select_file_popup(const char *prompt, StringCallback callback,
                         }
 					}
 					flycast::closedir(dir);
-#if defined(_WIN32) || defined(__ANDROID__) || defined(__SWITCH__) || defined(VITA)
+#if defined(_WIN32) || defined(__ANDROID__) || defined(__SWITCH__) || defined(__vita__)
 					if (!dotdot_seen)
 						subfolders.emplace_back("..");
 #else

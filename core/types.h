@@ -198,7 +198,7 @@ inline static void JITWriteProtect(bool enabled) {
 void os_DebugBreak();
 #define dbgbreak os_DebugBreak()
 
-#ifdef VITA
+#ifdef __vita__
 #include <strings.h> // For strcasecmp
 #endif
 

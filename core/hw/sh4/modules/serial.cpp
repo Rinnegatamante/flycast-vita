@@ -7,7 +7,7 @@
 #include <fcntl.h>
 #ifndef _WIN32
 #include <unistd.h>
-#ifndef VITA
+#ifndef __vita__
 #include <sys/ioctl.h>
 #endif
 #else
