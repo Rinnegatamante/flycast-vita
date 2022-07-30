@@ -107,6 +107,9 @@ if(VITA)
 	target_compile_definitions(${PROJECT_NAME} PRIVATE TARGET_NO_EXCEPTIONS)
 	target_compile_definitions(${PROJECT_NAME} PRIVATE VITA _GNU_SOURCE)
 
+	# For proper fseek/ftell definition in external dependency "libchdr", doesn't impact anything else:
+	target_compile_definitions(${PROJECT_NAME} PRIVATE __PS3__)
+
 elseif(NINTENDO_SWITCH)
     set(USE_VULKAN OFF)
     enable_language(ASM)
