@@ -18,6 +18,7 @@
 */
 #pragma once
 #include "types.h"
+#include "archive/rzip.h"
 
 #include <limits>
 
@@ -99,6 +100,16 @@ public:
 		if (_version > Current)
 			throw Exception("Version too recent");
 	}
+	
+	Deserializer(size_t limit, RZipFile *fh, bool rollback = false)
+		: SerializeBase(limit, rollback), handle(fh)
+	{
+		deserialize(_version);
+		if (_version > V13_LIBRETRO && _version < V5)
+			throw Exception("Unsupported version");
+		if (_version > Current)
+			throw Exception("Version too recent");
+	}
 
 	template<typename T>
 	void deserialize(T& obj)
@@ -139,13 +150,18 @@ private:
 			WARN_LOG(SAVESTATE, "Savestate overflow: current %d limit %d sz %d", (int)this->_size, (int)limit, (int)size);
 			throw Exception("Invalid savestate");
 		}
-		memcpy(dest, data, size);
-		data += size;
+		if (data) {
+			memcpy(dest, data, size);
+			data += size;
+		} else {
+			handle->Read(dest, size);
+		}
 		this->_size += size;
 	}
 
 	Version _version;
-	const u8 *data;
+	const u8 *data = nullptr;
+	RZipFile *handle = nullptr;
 };
 
 class Serializer : public SerializeBase
@@ -156,6 +172,13 @@ public:
 
 	Serializer(void *data, size_t limit, bool rollback = false)
 		: SerializeBase(limit, rollback), data((u8 *)data)
+	{
+		Version v = Current;
+		serialize(v);
+	}
+	
+	Serializer(size_t limit, RZipFile *fh, bool rollback = false)
+		: SerializeBase(limit, rollback), handle(fh)
 	{
 		Version v = Current;
 		serialize(v);
@@ -193,10 +216,14 @@ private:
 			memcpy(data, src, size);
 			data += size;
 		}
+		if (handle && handle->rawFile()) {
+			handle->Write(src, size);
+		}
 		this->_size += size;
 	}
 
-	u8 *data;
+	u8 *data = nullptr;
+	RZipFile *handle = nullptr;
 };
 
 template<typename T>

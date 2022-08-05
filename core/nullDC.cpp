@@ -80,6 +80,26 @@ void flycast_term()
 	os_TermInput();
 }
 
+void dc_savestate_streaming(int index) {
+	Serializer ser;
+	dc_serialize(ser);
+	
+	std::string filename = hostfs::getSavestatePath(index, true);
+	RZipFile zipFile;
+	if (!zipFile.Open(filename, true))
+	{
+		WARN_LOG(SAVESTATE, "Failed to save state - could not open %s for writing", filename.c_str());
+		gui_display_notification("Cannot open save file", 2000);
+    	return;
+	}
+	
+	ser = Serializer(&zipFile, ser.size());
+	dc_serialize(ser);
+	zipFile.Close();
+	INFO_LOG(SAVESTATE, "Saved state to %s size %d", filename.c_str(), (int)ser.size()) ;
+	gui_display_notification("State saved", 1000);
+}
+
 void dc_savestate(int index)
 {
 	Serializer ser;
@@ -89,7 +109,7 @@ void dc_savestate(int index)
 	if (data == nullptr)
 	{
 		WARN_LOG(SAVESTATE, "Failed to save state - could not malloc %d bytes", (int)ser.size());
-		gui_display_notification("Save state failed - memory full", 2000);
+		dc_savestate_streaming(index);
     	return;
 	}
 
@@ -135,8 +155,48 @@ void dc_savestate(int index)
 	gui_display_notification("State saved", 1000);
 }
 
+void dc_loadstate_streaming(int index)
+{
+	u32 total_size = 0;
+	FILE *f = nullptr;
+	
+	std::string filename = hostfs::getSavestatePath(index, false);
+	RZipFile zipFile;
+	if (!zipFile.Open(filename, false))
+	{
+		WARN_LOG(SAVESTATE, "Failed to load state - could not open %s for reading", filename.c_str()) ;
+		gui_display_notification("Save state not found", 2000);
+		return;
+	}
+	
+	total_size = (u32)zipFile.Size();
+	if (index == -1 && config::GGPOEnable)
+	{
+		f = zipFile.rawFile();
+		long pos = std::ftell(f);
+		MD5Sum().add(f)
+				.getDigest(settings.network.md5.savestate);
+		std::fseek(f, pos, SEEK_SET);
+		f = nullptr;
+	}
+	
+	try {
+		Deserializer deser(total_size, &zipFile);
+		dc_loadstate(deser);
+		if (deser.size() != total_size)
+			WARN_LOG(SAVESTATE, "Savestate size %d but only %d bytes used", total_size, (int)deser.size());
+	} catch (const Deserializer::Exception& e) {
+		ERROR_LOG(SAVESTATE, "%s", e.what());
+	}
+	
+	zipFile.Close();
+	EventManager::event(Event::LoadState);
+    INFO_LOG(SAVESTATE, "Loaded state from %s size %d", filename.c_str(), total_size) ;
+}
+
 void dc_loadstate(int index)
 {
+	dc_loadstate_streaming(index);
 	u32 total_size = 0;
 	FILE *f = nullptr;
 
@@ -178,11 +238,11 @@ void dc_loadstate(int index)
 	if ( data == NULL )
 	{
 		WARN_LOG(SAVESTATE, "Failed to load state - could not malloc %d bytes", total_size) ;
-		gui_display_notification("Failed to load state - memory full", 2000);
 		if (f != nullptr)
 			std::fclose(f);
 		else
 			zipFile.Close();
+		dc_loadstate_streaming(index);
 		return;
 	}
 
