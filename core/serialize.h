@@ -18,7 +18,6 @@
 */
 #pragma once
 #include "types.h"
-#include "archive/rzip.h"
 
 #include <limits>
 
@@ -101,7 +100,7 @@ public:
 			throw Exception("Version too recent");
 	}
 	
-	Deserializer(size_t limit, RZipFile *fh, bool rollback = false)
+	Deserializer(size_t limit, FILE *fh, bool rollback = false)
 		: SerializeBase(limit, rollback), handle(fh)
 	{
 		deserialize(_version);
@@ -136,7 +135,10 @@ public:
 			WARN_LOG(SAVESTATE, "Savestate overflow: current %d limit %d sz %d", (int)this->_size, (int)limit, (int)size);
 			throw Exception("Invalid savestate");
 		}
-		data += size;
+		if (data != nullptr)
+			data += size;
+		else
+			std::fseek(handle, size, SEEK_CUR);
 		this->_size += size;
 	}
 
@@ -154,14 +156,14 @@ private:
 			memcpy(dest, data, size);
 			data += size;
 		} else {
-			handle->Read(dest, size);
+			fread(dest, 1, size, handle);
 		}
 		this->_size += size;
 	}
 
 	Version _version;
 	const u8 *data = nullptr;
-	RZipFile *handle = nullptr;
+	FILE *handle = nullptr;
 };
 
 class Serializer : public SerializeBase
@@ -177,7 +179,7 @@ public:
 		serialize(v);
 	}
 	
-	Serializer(size_t limit, RZipFile *fh, bool rollback = false)
+	Serializer(size_t limit, FILE *fh, bool rollback = false)
 		: SerializeBase(limit, rollback), handle(fh)
 	{
 		Version v = Current;
@@ -204,6 +206,12 @@ public:
 	{
 		if (data != nullptr)
 			data += size;
+		else {
+			void *tmp = malloc(size);
+			memset(tmp, 0, size);
+			std::fwrite(tmp, 1, size, handle);
+			free(tmp);
+		}	
 		this->_size += size;
 	}
 	bool dryrun() const { return data == nullptr; }
@@ -216,14 +224,14 @@ private:
 			memcpy(data, src, size);
 			data += size;
 		}
-		if (handle && handle->rawFile()) {
-			handle->Write(src, size);
+		if (handle != nullptr) {
+			std::fwrite(src, 1, size, handle);
 		}
 		this->_size += size;
 	}
 
 	u8 *data = nullptr;
-	RZipFile *handle = nullptr;
+	FILE *handle = nullptr;
 };
 
 template<typename T>

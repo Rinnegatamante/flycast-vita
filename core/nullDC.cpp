@@ -82,26 +82,28 @@ void flycast_term()
 
 void dc_savestate_streaming(int index) {
 	Serializer ser;
-	dc_serialize(ser);
 	
 	std::string filename = hostfs::getSavestatePath(index, true);
-	RZipFile zipFile;
-	if (!zipFile.Open(filename, true))
+	FILE *f = nowide::fopen(filename.c_str(), "wb") ;
+	if (f == NULL)
 	{
 		WARN_LOG(SAVESTATE, "Failed to save state - could not open %s for writing", filename.c_str());
 		gui_display_notification("Cannot open save file", 2000);
     	return;
 	}
 	
-	ser = Serializer(&zipFile, ser.size());
+	ser = Serializer(32 * 1024 * 1024, f);
 	dc_serialize(ser);
-	zipFile.Close();
+	std::fclose(f);
 	INFO_LOG(SAVESTATE, "Saved state to %s size %d", filename.c_str(), (int)ser.size()) ;
 	gui_display_notification("State saved", 1000);
 }
 
 void dc_savestate(int index)
 {
+	dc_savestate_streaming(index);
+	return;
+
 	Serializer ser;
 	dc_serialize(ser);
 
@@ -117,7 +119,7 @@ void dc_savestate(int index)
 	dc_serialize(ser);
 
 	std::string filename = hostfs::getSavestatePath(index, true);
-#if 0
+#ifdef __vita__
 	FILE *f = nowide::fopen(filename.c_str(), "wb") ;
 
 	if ( f == NULL )
@@ -160,28 +162,25 @@ void dc_loadstate_streaming(int index)
 	u32 total_size = 0;
 	FILE *f = nullptr;
 	
+	emu.stop();
+	
 	std::string filename = hostfs::getSavestatePath(index, false);
-	RZipFile zipFile;
-	if (!zipFile.Open(filename, false))
+	f = nowide::fopen(filename.c_str(), "rb") ;
+	if ( f == NULL )
 	{
 		WARN_LOG(SAVESTATE, "Failed to load state - could not open %s for reading", filename.c_str()) ;
 		gui_display_notification("Save state not found", 2000);
 		return;
 	}
 	
-	total_size = (u32)zipFile.Size();
 	if (index == -1 && config::GGPOEnable)
-	{
-		f = zipFile.rawFile();
-		long pos = std::ftell(f);
-		MD5Sum().add(f)
-				.getDigest(settings.network.md5.savestate);
-		std::fseek(f, pos, SEEK_SET);
-		f = nullptr;
-	}
+		MD5Sum().add(f).getDigest(settings.network.md5.savestate);
+	std::fseek(f, 0, SEEK_END);
+	total_size = (u32)std::ftell(f);
+	std::fseek(f, 0, SEEK_SET);
 	
 	try {
-		Deserializer deser(total_size, &zipFile);
+		Deserializer deser(total_size, f);
 		dc_loadstate(deser);
 		if (deser.size() != total_size)
 			WARN_LOG(SAVESTATE, "Savestate size %d but only %d bytes used", total_size, (int)deser.size());
@@ -189,7 +188,7 @@ void dc_loadstate_streaming(int index)
 		ERROR_LOG(SAVESTATE, "%s", e.what());
 	}
 	
-	zipFile.Close();
+	std::fclose(f);
 	EventManager::event(Event::LoadState);
     INFO_LOG(SAVESTATE, "Loaded state from %s size %d", filename.c_str(), total_size) ;
 }
@@ -197,6 +196,8 @@ void dc_loadstate_streaming(int index)
 void dc_loadstate(int index)
 {
 	dc_loadstate_streaming(index);
+	return;
+
 	u32 total_size = 0;
 	FILE *f = nullptr;
 
