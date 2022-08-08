@@ -19,16 +19,58 @@
 #include <vitasdk.h>
 #include <vitaGL.h>
 #include <kubridge.h>
-int _newlib_heap_size_user = 188 * 1024 * 1024;
+int _newlib_heap_size_user = 184 * 1024 * 1024;
 unsigned int sceUserMainThreadStackSize = 1 * 1024 * 1024;
+int sceLibcHeapSize = 4 * 1024 * 1024;
 bool is_standalone = false;
 
 extern "C" {
+FILE *sceLibcBridge_fopen(const char *filename, const char *mode);
+int sceLibcBridge_fclose(FILE *stream);
+size_t sceLibcBridge_fread(void *ptr, size_t size, size_t count, FILE *stream);
+int sceLibcBridge_fseek(FILE *stream, long int offset, int origin);
+long int sceLibcBridge_ftell(FILE *stream);
+size_t sceLibcBridge_fwrite(const void *ptr, size_t size, size_t count, FILE *stream);
+int sceLibcBridge_ferror(FILE *stream);
+int sceLibcBridge_feof(FILE *stream);
+int sceLibcBridge_fprintf(FILE *stream, const char *format, ... );
+int sceLibcBridge_fputc(int ch, FILE *stream);
+int sceLibcBridge_fflush(FILE *stream);
+char *sceLibcBridge_fgets(char *s, int len, FILE *stream);
+wint_t sceLibcBridge_fgetwc(FILE *stream);
+int sceLibcBridge_vfprintf(FILE *stream, const char *format, va_list arg);
+
+// Memory allocator wrappers
 void *__wrap_calloc(uint32_t nmember, uint32_t size) { return vglCalloc(nmember, size); }
 void __wrap_free(void *addr) { vglFree(addr); };
 void *__wrap_malloc(uint32_t size) { return vglMalloc(size); };
 void *__wrap_memalign(uint32_t alignment, uint32_t size) { return vglMemalign(alignment, size); };
 void *__wrap_realloc(void *ptr, uint32_t size) { return vglRealloc(ptr, size); };
+
+// I/O wrappers
+FILE *__wrap_fopen(const char *filename, const char *mode) { return sceLibcBridge_fopen(filename, mode); }
+int __wrap_fclose(FILE *stream) { return sceLibcBridge_fclose(stream); }
+size_t __wrap_fread(void *ptr, size_t size, size_t count, FILE *stream) { return sceLibcBridge_fread(ptr, size, count, stream); }
+int __wrap_fseek(FILE *stream, long int offset, int origin) { return sceLibcBridge_fseek(stream, offset, origin); }
+long int __wrap_ftell(FILE *stream) { return sceLibcBridge_ftell(stream); }
+size_t __wrap_fwrite(const void *ptr, size_t size, size_t count, FILE *stream) { return sceLibcBridge_fwrite(ptr, size, count, stream); }
+int __wrap_ferror(FILE *stream) { return sceLibcBridge_ferror(stream); }
+int __wrap_feof(FILE *stream) { return sceLibcBridge_feof(stream); }
+int __wrap_fflush(FILE *stream) { return sceLibcBridge_fflush(stream); };
+int __wrap_fputc(int ch, FILE *stream) { return sceLibcBridge_fputc(ch, stream); }
+char *__wrap_fgets(char *s, int len, FILE *stream) { return sceLibcBridge_fgets(s, len, stream); }
+wint_t __wrap_fgetwc(FILE *stream) { return sceLibcBridge_fgetwc(stream); }
+int __wrap_vfprintf(FILE *stream, const char *format, va_list arg) { return sceLibcBridge_vfprintf(stream, format, arg); }
+int __wrap_fprintf( FILE *stream, const char *text, ...) { 
+	va_list list;
+	static char string[0x8000];
+
+	va_start(list, text);
+	vsprintf(string, text, list);
+	va_end(list);
+
+	return sceLibcBridge_fprintf(stream, text); 
+}
 };
 #endif
 
