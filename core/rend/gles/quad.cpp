@@ -115,6 +115,8 @@ void initQuad()
 #ifndef GLES2
 	if (quadVertexArray == 0 && gl.gl_major >= 3)
 		glGenVertexArrays(1, &quadVertexArray);
+#elif defined(__vita__)
+	glGenVertexArrays(1, &quadVertexArray);
 #endif
 	if (quadIndexBuffer == 0)
 	{
@@ -127,8 +129,10 @@ void initQuad()
 	if (quadBuffer == 0)
 	{
 		glGenBuffers(1, &quadBuffer);
-#ifndef GLES2
+#if !defined(GLES2) || defined(__vita__)
+#ifndef __vita__
 		if (gl.gl_major >= 3)
+#endif
 		{
 			bindVertexArray(quadVertexArray);
 			glBindBuffer(GL_ARRAY_BUFFER, quadBuffer);
@@ -191,9 +195,11 @@ void drawQuad(GLuint texId, bool rotate, bool swapY)
 
 	glBindBuffer(GL_ARRAY_BUFFER, quadBuffer);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadIndexBuffer);
+#ifndef __vita__
 	if (gl.gl_major < 3)
 		setupVertexAttribs();
 	else
+#endif
 		bindVertexArray(quadVertexArray);
 
 	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);

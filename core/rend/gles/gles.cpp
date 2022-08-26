@@ -1101,6 +1101,9 @@ static void SetupOSDVBO()
 		glGenVertexArrays(1, &gl.OSD_SHADER.vao);
 		glBindVertexArray(gl.OSD_SHADER.vao);
 	}
+#elif defined(__vita__)
+	glGenVertexArrays(1, &gl.OSD_SHADER.vao);
+	glBindVertexArray(gl.OSD_SHADER.vao);
 #endif
 	if (gl.OSD_SHADER.geometry == 0)
 		glGenBuffers(1, &gl.OSD_SHADER.geometry);
@@ -1380,12 +1383,16 @@ void OSD_DRAW(bool clear_screen)
 			glViewport(0, 0, settings.display.width, settings.display.height);
 		}
 
+#ifdef __vita__
+		glBindVertexArray(gl.OSD_SHADER.vao);
+#else
 #ifndef GLES2
 		if (gl.gl_major >= 3)
 			glBindVertexArray(gl.OSD_SHADER.vao);
 		else
 #endif
 			SetupOSDVBO();
+#endif
 		verify(glIsProgram(gl.OSD_SHADER.program));
 		glcache.UseProgram(gl.OSD_SHADER.program);
 

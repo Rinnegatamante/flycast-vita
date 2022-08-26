@@ -387,8 +387,10 @@ void PostProcessor::init()
 	glGenBuffers(1, &vertexBuffer);
 	glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
-#ifndef GLES2
+#if !defined(GLES2) || defined(__vita__)
+#ifndef __vita__
 	if (gl.gl_major >= 3)
+#endif
 	{
 		glGenVertexArrays(1, &vertexArray);
 		glBindVertexArray(vertexArray);

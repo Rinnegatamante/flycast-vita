@@ -488,7 +488,7 @@ void SetMVS_Mode(ModifierVolumeMode mv_mode, ISP_Modvol ispc)
 
 void SetupMainVBO()
 {
-#ifndef GLES2
+#if !defined(GLES2) || defined(__vita__)
 	if (gl.vbo.mainVAO != 0)
 	{
 		glBindVertexArray(gl.vbo.mainVAO);
@@ -496,7 +496,9 @@ void SetupMainVBO()
 		gl.vbo.idxs->bind();
 		return;
 	}
+#ifndef __vita__
 	if (gl.gl_major >= 3)
+#endif
 	{
 		glGenVertexArrays(1, &gl.vbo.mainVAO);
 		glBindVertexArray(gl.vbo.mainVAO);
@@ -526,14 +528,16 @@ void SetupMainVBO()
 
 static void SetupModvolVBO()
 {
-#ifndef GLES2
+#if !defined(GLES2) || defined(__vita__)
 	if (gl.vbo.modvolVAO != 0)
 	{
 		glBindVertexArray(gl.vbo.modvolVAO);
 		gl.vbo.modvols->bind();
 		return;
 	}
+#ifndef __vita__
 	if (gl.gl_major >= 3)
+#endif
 	{
 		glGenVertexArrays(1, &gl.vbo.modvolVAO);
 		glBindVertexArray(gl.vbo.modvolVAO);
@@ -780,7 +784,7 @@ static void setupOsdVao()
 		GLushort indices[] = { 0, 1, 2, 1, 3 };
 		osdIndex->update(indices, sizeof(indices));
 	}
-#ifndef GLES2
+#if !defined(GLES2) || defined(__vita__)
 	if (osdVao != 0)
 	{
 		glBindVertexArray(osdVao);
@@ -788,7 +792,9 @@ static void setupOsdVao()
 		osdIndex->bind();
 		return;
 	}
+#ifndef __vita__
 	if (gl.gl_major >= 3)
+#endif
 	{
 		glGenVertexArrays(1, &osdVao);
 		glBindVertexArray(osdVao);
@@ -990,6 +996,11 @@ void termVmuLightgun()
 #ifndef GLES2
 	if (gl.gl_major >= 3 && osdVao != 0)
 	{
+		glDeleteVertexArrays(1, &osdVao);
+		osdVao = 0;
+	}
+#elif defined(__vita__)
+	if (osdVao != 0) {
 		glDeleteVertexArrays(1, &osdVao);
 		osdVao = 0;
 	}

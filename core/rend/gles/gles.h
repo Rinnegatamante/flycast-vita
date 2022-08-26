@@ -440,6 +440,8 @@ inline static void bindVertexArray(GLuint vao)
 #ifndef GLES2
 	if (gl.gl_major >= 3)
 		glBindVertexArray(vao);
+#elif defined(__vita__)
+	glBindVertexArray(vao);
 #endif
 }
 
@@ -448,5 +450,7 @@ inline static void deleteVertexArray(GLuint vao)
 #ifndef GLES2
 	if (gl.gl_major >= 3)
 		glDeleteVertexArrays(1, &vao);
+#elif defined(__vita__)
+	glDeleteVertexArrays(1, &vao);
 #endif
 }
