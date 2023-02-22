@@ -934,7 +934,7 @@ GLuint gl_CompileAndLink(const char *vertexShader, const char *fragmentShader)
 	glDeleteShader(ps);
 
 	glcache.UseProgram(program);
-	verify(glIsProgram(program));
+
 	return program;
 }
 
@@ -1096,7 +1096,7 @@ bool CompilePipelineShader(PipelineShader* s)
 
 	ShaderUniforms.Set(s);
 
-	return glIsProgram(s->program)==GL_TRUE;
+	return true;
 }
 
 static void SetupOSDVBO()
