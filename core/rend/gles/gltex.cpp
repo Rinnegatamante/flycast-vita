@@ -225,8 +225,9 @@ void ReadRTTBuffer()
 		if (gl.gl_major >= 3)
 			glBindBuffer(GL_PIXEL_PACK_BUFFER, gl.rtt.pbo);
 #endif
-
+#if !defined(__vita__)
 		glPixelStorei(GL_PACK_ALIGNMENT, 1);
+#endif
 		gl.rtt.width = w;
 		gl.rtt.height = h;
 		u16 *dst = gl.gl_major >= 3 ? nullptr : (u16 *)&vram[tex_addr];

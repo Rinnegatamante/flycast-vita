@@ -31,10 +31,13 @@
 #include <string>
 
 typedef bool (*StringCallback)(bool cancelled, std::string selection);
-
+#ifdef __vita__
+void select_file_popup(const char *prompt, StringCallback callback,
+		bool selectFile = false, const std::string& extension = "", std::string startDir = "ux0:/");
+#else
 void select_file_popup(const char *prompt, StringCallback callback,
 		bool selectFile = false, const std::string& extension = "");
-
+#endif
 void scrollWhenDraggingOnVoid(ImGuiMouseButton mouse_button = ImGuiMouseButton_Left);
 
 IMGUI_API const ImWchar*    GetGlyphRangesChineseSimplifiedOfficial();// Default + Half-Width + Japanese Hiragana/Katakana + set of 7800 CJK Unified Ideographs from General Standard Chinese Characters

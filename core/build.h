@@ -104,14 +104,18 @@
 #endif
 
 #if !defined(__ANDROID__) && !defined(TARGET_IPHONE) && !defined(TARGET_UWP) \
-	&& !defined(__SWITCH__) && !defined(LIBRETRO) && !defined(__NetBSD__) && !defined(__OpenBSD__)
+	&& !defined(__SWITCH__) && !defined(LIBRETRO) && !defined(__NetBSD__) && !defined(__OpenBSD__) && !defined(__vita__)
 #define NAOMI_MULTIBOARD
 #endif
 
 // TARGET PLATFORM
-
+#if !defined(__vita__)
 #define RAM_SIZE_MAX (32*1024*1024)
 #define VRAM_SIZE_MAX (16*1024*1024)
+#else // Vita does not target Atomiswave/Naomi
+#define RAM_SIZE_MAX (16*1024*1024)
+#define VRAM_SIZE_MAX (8*1024*1024)
+#endif
 #define ARAM_SIZE_MAX (8*1024*1024)
 
 #define GD_CLOCK 33868800						//GDROM XTAL -- 768fs

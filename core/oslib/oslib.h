@@ -1,6 +1,6 @@
 #pragma once
 #include "types.h"
-#if defined(__SWITCH__)
+#if defined(__SWITCH__) || defined(__vita__)
 #include <malloc.h>
 #endif
 
@@ -85,7 +85,7 @@ private:
 	std::vector<RUNTIME_FUNCTION *> tables;
 	std::vector<u16> codes;
 #endif
-#if defined(__unix__) || defined(__APPLE__) || defined(__SWITCH__)
+#if defined(__unix__) || defined(__APPLE__) || defined(__SWITCH__) || defined(__vita__)
 	int stackOffset = 0;
 	uintptr_t lastOffset = 0;
 	std::vector<u8> cieInstructions;
@@ -125,7 +125,7 @@ static inline void *allocAligned(size_t alignment, size_t size)
 {
 #ifdef _WIN32
 	return _aligned_malloc(size, alignment);
-#elif defined(__SWITCH__)
+#elif defined(__SWITCH__) || defined(__vita__)
    return memalign(alignment, size);
 #else
 	void *data;

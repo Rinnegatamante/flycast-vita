@@ -1,6 +1,10 @@
 #pragma once
 #include "build.h"
 
+#ifdef __vita__
+#include <strings.h> // For strcasecmp
+#endif
+
 #if HOST_CPU == CPU_X86
 	#ifdef _MSC_VER
 	#define DYNACALL  __fastcall
