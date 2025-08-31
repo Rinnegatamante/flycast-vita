@@ -449,21 +449,6 @@ int main(int argc, char* argv[])
 	if (!(sceIoGetstat("ux0:/tai/kubridge.skprx", &st1) >= 0 || sceIoGetstat("ur0:/tai/kubridge.skprx", &st2) >= 0))
 		early_fatal_error("Error: kubridge.skprx is not installed.");
 	
-	// Checking for kubridge version
-	FILE *f = fopen("ux0:/tai/kubridge.skprx", "rb");
-	if (!f)
-		f = fopen("ur0:/tai/kubridge.skprx", "rb");
-	fseek(f, 0, SEEK_END);
-	long size = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	void *buf = vglMalloc(size);
-	fread(buf, 1, size, f);
-	fclose(f);
-	uint32_t kubridge_hash = XXH32(buf, size, 7);
-	vglFree(buf);
-	if (kubridge_hash == 0xFDAE199B)
-		early_fatal_error("Error: kubridge.skprx is outdated.");
-	
 	char boot_params[1024];
 	char *launch_argv[2];
 	argc = 0;
