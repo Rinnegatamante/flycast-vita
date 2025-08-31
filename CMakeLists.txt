@@ -94,8 +94,8 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/core/version.h.in" "${CMAKE_CURRENT_
 if(VITA)
 	include("${VITASDK}/share/vita.cmake" REQUIRED)
 
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-q,--wrap,memcpy,--wrap,memset,--wrap,malloc,--wrap,memalign,--wrap,free,--wrap,calloc,--wrap,realloc -O3 -DNDEBUG -fno-optimize-sibling-calls -fsigned-char -fno-short-enums -marm")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q,--wrap,malloc,--wrap,memalign,--wrap,free,--wrap,calloc,--wrap,realloc -O3 -DNDEBUG -fno-optimize-sibling-calls -fsigned-char -fno-short-enums -marm")
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-q,--wrap,memcpy,--wrap,memset,--wrap,malloc,--wrap,memalign,--wrap,free,--wrap,calloc,--wrap,realloc -flto -O3 -DNDEBUG -fno-optimize-sibling-calls -fsigned-char -fno-short-enums -marm")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q,--wrap,malloc,--wrap,memalign,--wrap,free,--wrap,calloc,--wrap,realloc -flto -O3 -DNDEBUG -fno-optimize-sibling-calls -fsigned-char -fno-short-enums -marm")
 
 	set(VITA_APP_NAME "Flycast")
 	set(VITA_TITLEID  "FLYCASTDC")
@@ -342,8 +342,13 @@ endif()
 
 option(BUILD_SHARED_LIBS "Build shared library" OFF)
 set(XXHASH_BUILD_XXHSUM OFF CACHE BOOL "Build the xxhsum binary")
-add_subdirectory(core/deps/xxHash/cmake_unofficial)
-target_link_libraries(${PROJECT_NAME} PRIVATE xxHash::xxhash)
+if (VITA)
+	target_sources(${PROJECT_NAME} PRIVATE core/deps/xxHash/xxhash.c)
+	target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/deps/xxHash)
+else()
+	add_subdirectory(core/deps/xxHash/cmake_unofficial)
+	target_link_libraries(${PROJECT_NAME} PRIVATE xxHash::xxhash)
+endif()
 
 option(BUILD_SHARED_LIBS "Build shared library" OFF)
 add_subdirectory(core/deps/glm)
@@ -372,7 +377,7 @@ if(NOT LIBRETRO)
 		target_link_libraries(${PROJECT_NAME} PRIVATE "-static-libgcc -static-libstdc++")
 	endif()
 
-	if(NOT ANDROID AND NOT IOS)
+	if(NOT ANDROID AND NOT IOS AND NOT VITA)
 		if(NOT APPLE)
 			find_package(SDL2)
 		endif()
@@ -381,7 +386,7 @@ if(NOT LIBRETRO)
 			set(SDL2_FOUND 1)
 		endif()
 
-		if((APPLE OR WIN32 OR VITA) AND TARGET SDL2::SDL2-static)
+		if((APPLE OR WIN32) AND TARGET SDL2::SDL2-static)
 			target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2-static)
 		elseif(TARGET SDL2::SDL2)
 			target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2)
@@ -398,11 +403,20 @@ if(NOT LIBRETRO)
 			target_link_libraries(${PROJECT_NAME} PRIVATE CURL::libcurl)
 		endif()
 	endif()
-
-	find_package(ZLIB)
-	if(TARGET ZLIB::ZLIB AND NOT ANDROID AND (NOT WIN32 OR WINDOWS_STORE))
+	
+	if (VITA)
+		set(SDL2_FOUND 1)
+		target_link_libraries(${PROJECT_NAME} PRIVATE SDL2)
+		target_compile_definitions(${PROJECT_NAME} PRIVATE USE_SDL USE_SDL_AUDIO)
+		target_include_directories(${PROJECT_NAME} PRIVATE ${VITASDK}/arm-vita-eabi/include/SDL2)
+		target_sources(${PROJECT_NAME} PRIVATE core/sdl/sdl.cpp core/sdl/sdl.h core/sdl/sdl_gamepad.h core/sdl/sdl_keyboard.h)
 		set(WITH_SYSTEM_ZLIB ON CACHE BOOL "Use system provided zlib library")
-		target_link_libraries(${PROJECT_NAME} PRIVATE ZLIB::ZLIB)
+	else()
+		find_package(ZLIB)
+		if(TARGET ZLIB::ZLIB AND NOT ANDROID AND (NOT WIN32 OR WINDOWS_STORE))
+			set(WITH_SYSTEM_ZLIB ON CACHE BOOL "Use system provided zlib library")
+			target_link_libraries(${PROJECT_NAME} PRIVATE ZLIB::ZLIB)
+		endif()
 	endif()
 
 	find_package(Lua)
@@ -414,8 +428,18 @@ if(NOT LIBRETRO)
 	endif()
 endif()
 
-add_subdirectory(core/deps/libchdr EXCLUDE_FROM_ALL)
-target_link_libraries(${PROJECT_NAME} PRIVATE chdr-static)
+if (VITA)
+	target_include_directories(${PROJECT_NAME} PRIVATE core/deps/libchdr/deps/lzma-19.00/include)
+	target_sources(${PROJECT_NAME} PRIVATE
+		core/deps/libchdr/src/libchdr_bitstream.c
+		core/deps/libchdr/src/libchdr_cdrom.c
+		core/deps/libchdr/src/libchdr_chd.c
+		core/deps/libchdr/src/libchdr_flac.c
+		core/deps/libchdr/src/libchdr_huffman.c)
+else()
+	add_subdirectory(core/deps/libchdr EXCLUDE_FROM_ALL)
+	target_link_libraries(${PROJECT_NAME} PRIVATE chdr-static)
+endif()
 target_include_directories(${PROJECT_NAME} PRIVATE core/deps/libchdr/include)
 
 if(NOT WITH_SYSTEM_ZLIB)
@@ -473,6 +497,10 @@ if(PKG_CONFIG_FOUND AND NOT ANDROID AND NOT APPLE AND NOT LIBRETRO)
 		target_include_directories(${PROJECT_NAME} PRIVATE ${MINIUPNP_INCLUDE_DIRS})
 		target_link_libraries(${PROJECT_NAME} PRIVATE ${MINIUPNP_LIBRARIES})
 	endif()
+endif()
+
+if(VITA)
+	set(LIBZIP_FOUND 1)
 endif()
 
 if(NINTENDO_SWITCH AND USE_GLES)
@@ -575,7 +603,7 @@ if(NOT MINIUPNP_FOUND)
 	endif()
 endif()
 
-if(NOT LIBZIP_FOUND OR NINTENDO_SWITCH OR VITA)
+if(NOT LIBZIP_FOUND OR NINTENDO_SWITCH)
 	option(ENABLE_COMMONCRYPTO "Enable use of CommonCrypto" OFF)
 	option(ENABLE_GNUTLS "Enable use of GnuTLS" OFF)
 	option(ENABLE_MBEDTLS "Enable use of mbed TLS" OFF)
@@ -598,6 +626,13 @@ endif()
 if(VITA)
 	target_link_libraries(${PROJECT_NAME} PRIVATE
 			-Wl,--whole-archive pthread -Wl,--no-whole-archive
+			zip
+			z
+			bz2
+			ssl
+			lzma
+			zstd
+			crypto
 			stdc++
 			kubridge_stub
 			ScePgf_stub
@@ -608,11 +643,16 @@ if(VITA)
 			SceAudioIn_stub
 			SceDisplay_stub
 			SceKernelDmacMgr_stub
+			SceMotion_stub
+			SceCommonDialog_stub
 			SceIme_stub
 			ScePower_stub
 			SceCtrl_stub
+			SceTouch_stub
 			SceGxm_stub
 			SceVshBridge_stub
+			-Wl,--whole-archive SceSysmodule_stub -Wl,--no-whole-archive
+			-Wl,--whole-archive SceNetCtl_stub -Wl,--no-whole-archive
 	)
 endif()
 
