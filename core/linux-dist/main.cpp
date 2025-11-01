@@ -21,7 +21,6 @@
 #include <kubridge.h>
 #include <xxhash.h>
 int _newlib_heap_size_user = 246 * 1024 * 1024;
-unsigned int sceUserMainThreadStackSize = 1 * 1024 * 1024;
 bool is_standalone = false;
 
 extern "C" {
@@ -467,7 +466,8 @@ int main(int argc, char* argv[])
 	scePowerSetGpuClockFrequency(222);
 	scePowerSetGpuXbarClockFrequency(166);
 	SDL_setenv("VITA_DISABLE_TOUCH_BACK", "1", 1); // Disabling rearpad
-	vglSetParamBufferSize(8 * 1024 * 1024);
+	vglUseTripleBuffering(GL_FALSE);
+	vglSetParamBufferSize(6 * 1024 * 1024);
 	vglUseCachedMem(GL_TRUE);
 	vglInitWithCustomThreshold(0, 960, 544, 256 * 1024 * 1024, 0, 0, 0, SCE_GXM_MULTISAMPLE_4X);
 #endif
