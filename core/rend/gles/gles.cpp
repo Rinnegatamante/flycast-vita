@@ -775,7 +775,9 @@ void findGLVersion()
 		{
 			gl.gl_version = "GLES2";
 			gl.glsl_version_header = "";
+#ifndef __vita__
 			gl.index_type = GL_UNSIGNED_SHORT;
+#endif
 		}
 		gl.single_channel_format = GL_ALPHA;
 		const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
