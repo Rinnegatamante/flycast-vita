@@ -50,6 +50,11 @@
 //  ES 3.0    300       "#version 300 es"
 //----------------------------------------
 
+#ifdef __vita__
+#define GL_CG_VERTEX_SHADER_EXT                         0x890E
+#define GL_CG_FRAGMENT_SHADER_EXT                       0x890F
+#endif
+
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -484,13 +489,21 @@ static bool ImGui_ImplOpenGL3_CreateDeviceObjects()
 
     // Create shaders
     const GLchar* vertex_shader_with_version[2] = { g_GlslVersionString, vertex_shader };
+#ifdef __vita__
+    g_VertHandle = glCreateShader(GL_CG_VERTEX_SHADER_EXT);
+#else
     g_VertHandle = glCreateShader(GL_VERTEX_SHADER);
+#endif
     glShaderSource(g_VertHandle, 2, vertex_shader_with_version, NULL);
     glCompileShader(g_VertHandle);
     CheckShader(g_VertHandle, "vertex shader");
 
     const GLchar* fragment_shader_with_version[2] = { g_GlslVersionString, fragment_shader };
+#ifdef __vita__
+    g_FragHandle = glCreateShader(GL_CG_FRAGMENT_SHADER_EXT);
+#else
     g_FragHandle = glCreateShader(GL_FRAGMENT_SHADER);
+#endif
     glShaderSource(g_FragHandle, 2, fragment_shader_with_version, NULL);
     glCompileShader(g_FragHandle);
     CheckShader(g_FragHandle, "fragment shader");

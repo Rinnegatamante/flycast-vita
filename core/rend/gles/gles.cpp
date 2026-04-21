@@ -30,6 +30,9 @@
 
 //Fragment and vertex shaders code
 #ifdef __vita__
+#define GL_CG_VERTEX_SHADER_EXT                         0x890E
+#define GL_CG_FRAGMENT_SHADER_EXT                       0x890F
+
 const char* ShaderCompatSource = R"(
 #define GLES2 0
 #define GLES3 1
@@ -855,6 +858,12 @@ GLuint gl_CompileShader(const char* shader,GLuint type)
 {
 	GLint result;
 	GLint compile_log_len;
+#ifdef __vita__
+	if (type == GL_VERTEX_SHADER)
+		type = GL_CG_VERTEX_SHADER_EXT;
+	else
+		type = GL_CG_FRAGMENT_SHADER_EXT;
+#endif
 	GLuint rv=glCreateShader(type);
 	glShaderSource(rv, 1,&shader, NULL);
 	glCompileShader(rv);
