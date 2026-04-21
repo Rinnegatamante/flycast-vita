@@ -218,6 +218,11 @@ struct N2LightModel
 	int bumpId2;				// Light index for vol1 bump mapping
 };
 
+#ifdef __vita__
+extern "C" void *vglMalloc(uint32_t size);
+extern "C" void vglLazyFree(void *ptr);
+#endif
+
 struct rend_context
 {
 	u8* proc_start;
@@ -239,8 +244,36 @@ struct rend_context
 	RGBAColor fog_clamp_min;
 	RGBAColor fog_clamp_max;
 
+#ifdef __vita__
+	struct VtxList {
+		Vertex *_tail = nullptr;
+		Vertex *_head = nullptr;
+
+		int used() const { return _tail - _head; }
+		Vertex *Append(int sz = 1) { Vertex *ret = _tail; _tail += sz; return ret; }
+		Vertex *LastPtr() const { return _tail - 1; }
+		Vertex *head() const { return _head; }
+		void Clear() { _tail = _head; }
+		void Init(size_t sz) { _head = _tail = (Vertex*)vglMalloc(sz); };
+		void Free() { vglLazyFree(_head); }
+	};
+	struct IdxList {
+		u32 *_tail = nullptr;
+		u32 *_head = nullptr;
+
+		int used() const { return _tail - _head; }
+		u32 *Append(int sz = 1) { u32 *ret = _tail; _tail += sz; return ret; }
+		u32 *head() const { return _head; }
+		void Clear() { _tail = _head; }
+		void Init(size_t sz) { _head = _tail = (u32*)vglMalloc(sz); };
+		void Free() { vglLazyFree(_head); }
+	};
+	VtxList verts;
+	IdxList idx;
+#else
 	List<Vertex>      verts;
 	List<u32>         idx;
+#endif
 	List<ModTriangle> modtrig;
 	List<ModifierVolumeParam>  global_param_mvo;
 	List<ModifierVolumeParam>  global_param_mvo_tr;
@@ -331,8 +364,8 @@ struct TA_context
 		tad.Reset((u8*)allocAligned(32, TA_DATA_SIZE));
 
 #ifdef __vita__
-		rend.verts.InitBytes(4 * 1024 * 1024, &rend.Overrun, "verts");	//up to 4 mb of vtx data/frame = ~ 96k vtx/frame
-		rend.idx.Init(120 * 1024, &rend.Overrun, "idx");				//up to 120K indexes ( idx have stripification overhead )
+		rend.verts.Init(4 * 1024 * 1024);	//up to 4 mb of vtx data/frame = ~ 96k vtx/frame
+		rend.idx.Init(120 * 1024 * sizeof(u32));				//up to 120K indexes ( idx have stripification overhead )
 #else
 		rend.verts.Init(320 * 1024, &rend.Overrun, "verts");
 		rend.idx.Init(320 * 1024, &rend.Overrun, "idx");

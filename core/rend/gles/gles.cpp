@@ -1476,6 +1476,7 @@ bool OpenGLRenderer::Process(TA_context* ctx)
 
 static void upload_vertex_indices()
 {
+#ifndef __vita__
 	if (gl.index_type == GL_UNSIGNED_SHORT)
 	{
 		static bool overrun;
@@ -1489,6 +1490,10 @@ static void upload_vertex_indices()
 	}
 	else
 		gl.vbo.idxs->update(pvrrc.idx.head(), pvrrc.idx.bytes());
+#else
+	gl.vbo.idxs->bind();
+	vglBufferData(GL_ELEMENT_ARRAY_BUFFER, pvrrc.idx.head());
+#endif
 	glCheck();
 }
 
@@ -1609,7 +1614,12 @@ bool RenderFrame(int width, int height)
 	{
 		//move vertex to gpu
 		//Main VBO
+#ifdef __vita__
+		gl.vbo.geometry->bind();
+		vglBufferData(GL_ARRAY_BUFFER, pvrrc.verts.head());
+#else
 		gl.vbo.geometry->update(pvrrc.verts.head(), pvrrc.verts.bytes());
+#endif
 
 		upload_vertex_indices();
 

@@ -113,6 +113,10 @@ struct PipelineShader
 	bool divPosZ;
 };
 
+#ifdef __vita__
+extern "C" void vglBufferData(GLenum target, const GLvoid *data);
+#endif
+
 class GlBuffer
 {
 public:
