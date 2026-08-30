@@ -393,6 +393,86 @@ matched their original SHA-256 values exactly. Diagnostic shadow checking is
 off and `HlePatches=yes` is restored. The DevKit process is stopped after the
 completed loop; the preserved user savestate is unchanged.
 
+## Rejected probes: resolution and emulation-thread affinity
+
+The accepted division-HLE executable was compared at internal resolution 720
+and 480 with the same slot-6 state: ratios 0.831687 and 0.830824. Lowering
+resolution did not help, so 720 is retained. Evidence:
+`build-vita/devkit-logs/mvc2-resolution-ab/20260830-231206/`.
+
+The scheduling bars in the post-division Razor capture show the emulation
+worker running for 98.55% of capture time (14.70% on core 0, 53.45% on core 1,
+30.40% on core 2), versus 62.83% for the main/render thread. These sums use
+only Running bars and the capture's own time units. Configuration keys
+`vita.PinThreads`, `aica.Threaded`, `aica.ThreadCore`, `rend.AsyncTaParse`
+are not implemented in this branch; their presence in emu.cfg is not proof
+that the corresponding features run.
+
+A narrowly scoped affinity probe, applied after SDL audio-thread creation,
+pinned only the emulation worker to core 2. Readback confirmed mask 0x00040000
+and the device reported 500 MHz in both runs; no clocks were changed. Ratios
+were 0.832683 with automatic placement and 0.809307 pinned. Reject; the source
+change is fully removed. Its exact source and binary survive under
+`build-vita/devkit-logs/mvc2-affinity-ab/20260830-231911/`.
+
+## Retained iteration: scheduler-bounded cache-loop HLE
+
+The eight bytes at `0x8C02DEC6..0x8C02DECC`, CRC32 `9139F3E8`, encode
+OCBI R0 / ADD #32,R0 / DT R5 / BF loop. OCBI is already a NOP in this branch's
+non-STRICT interpreter and JIT; no cache operation is newly discarded.
+STRICT and Full-MMU builds decline the patch.
+
+The HLE native signature now receives the live remaining JIT cycle budget,
+after the entry debit and any entry scheduler call. At the measured four-cycle
+block cost, a batch executes at most `1 + (remaining - 1) / 4` iterations,
+clipped to R5 (initial zero means 2^32 iterations). Unusual cost/budget/MMU
+state executes one iteration. The next JIT entry still performs the exact
+debit that reaches zero, with the same R0/R5/T and cycle residue as the
+original loop. No scheduler or interrupt observation point is crossed inside
+the native batch. The full n-block guest cost is added to the wrapper's
+negative entry debit; R0 wraps modulo 2^32; all unrelated state is unchanged.
+
+The host test `scripts/test-mvc2-cache-loop.cpp` passed 291,464 cases, including
+scheduler-visible sequences, count-zero wrap and address wrap. The on-device
+shadow run compared 16,384 batches against the real opcode handlers without
+a mismatch; division shadow checks also passed again. Diagnostic artifact:
+`build-vita/devkit-logs/mvc2-cache-hle-shadow/20260830-232621/`.
+
+Three same-executable off/on pairs kept division HLE enabled, restored the
+same state, measured RTC `1988906533..1988906549`, and disabled diagnostics:
+
+| Cache-loop HLE | Ratios | Mean | Population standard deviation |
+| --- | --- | ---: | ---: |
+| Off | 0.827344, 0.827986, 0.826745 | 0.827358 | 0.000507 |
+| On | 0.834899, 0.836339, 0.835858 | 0.835699 | 0.000599 |
+
+Retain: +1.008% throughput. All six XML exits are the expected ProcessKilled;
+the shadow and measured screenshots show coherent match frames. Audio has
+not been captured/listened to, and this is not full speed. During continued
+experimentation the patch is selected with `[perf] Mvc2CacheLoopHle=yes`
+(default off); the original target configuration is restored after each run.
+
+Evidence: `build-vita/devkit-logs/mvc2-cache-hle-ab/20260830-232744/` preserves
+the source, exact binaries, six read-back configs and six target logs. Launch
+artifacts are in `mvc2-cache-hle-ab-{1,2,3}-{off,on}/` sibling directories.
+
+- raw ELF: `2115BEDFEDEE0AFF8FB96AE745D02F25BE879181C2F607C577F5FD14668FBBAC`
+- VELF: `B4A1D787DB5419414760225B6869779BDC2AD5400525AD2949E9923BFF49F500`
+- SELF: `3CE0E62955B9CE9C55B328AB04DFF151BDAF87B007D8CA9D2F173C61DA6BFC1B`
+- adjacent SFO remains ATTRIBUTE2=12 with the original hash.
+
+Post-change host-triggered PC profile:
+`build-vita/devkit-logs/occam/mvc2-cache-hle-pc/`, exact ELF matching above,
+4,894,098 application-range samples. SH4_TCB remains 41.17%; TA polygon
+parsing 9.47%, make_index 6.40%, ARM7 5.03%, AICA_Sample32 2.43%. These are
+waypoint-based rankings, not a precise time decomposition. RZR SHA-256:
+`BDE66653F8AEF08C3C98A6A153463D77846F7A4C15C26A5C080028168A157525`.
+The 65-second profiling launch completed normally.
+
+`scripts/measure-mvc2.ps1` now automates config backup/upload/readback/restore,
+binary preservation, exact guest-interval measurement and result CSVs. It
+refuses to continue if the SELF changes during a same-executable A/B.
+
 ## Next evidence gate
 
 1. Use the post-division profile for the next candidate. The vertex cluster

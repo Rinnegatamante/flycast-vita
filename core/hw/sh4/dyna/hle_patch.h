@@ -3,7 +3,9 @@
 
 #include "types.h"
 
-using HleNativeFn = void (*)();
+// Remaining JIT cycles after the entry debit and any entry scheduler call.
+// A batched handler must return before another debit would reach <= 0.
+using HleNativeFn = void (*)(s32 remainingCycles);
 
 struct HlePatch
 {

@@ -2069,6 +2069,10 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 		// negative entry-block debit so the resulting charge is exact.
 		ass.Mov(r0, (u32)-(s32)cycles);
 		ass.Str(r0, MemOperand(r8, rcbOffset(cntx.hle_cycles)));
+		if (!mmu_enabled())
+			ass.Mov(r0, r9);
+		else
+			ass.Ldr(r0, MemOperand(r8, rcbOffset(cntx.cycle_counter)));
 		call((void *)hle);
 		ass.Ldr(r0, MemOperand(r8, rcbOffset(cntx.hle_cycles)));
 		if (!mmu_enabled())

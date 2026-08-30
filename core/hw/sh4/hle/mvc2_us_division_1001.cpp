@@ -7,6 +7,9 @@
 #include "hw/sh4/sh4_opcode_list.h"
 #include <cstring>
 
+void mvc2CacheLoopEntry(s32 remainingCycles);
+bool mvc2CacheLoopEligible();
+
 namespace {
 
 bool eligible()
@@ -93,7 +96,7 @@ __attribute__((noinline)) void validateBlock()
 	restoreOperands(initial);
 }
 
-void divideEntry()
+void divideEntry(s32 /*remainingCycles*/)
 {
 	static int checksLeft = -1;
 	static bool fallbackReported = false;
@@ -131,8 +134,9 @@ void divideEntry()
 
 HlePatch patches[] = {
 	{0x8C1291E2, 140, 0x5598C45C, &divideEntry, -1, &eligible},
+	{0x8C02DEC6, 8, 0x9139F3E8, &mvc2CacheLoopEntry, -1, &mvc2CacheLoopEligible},
 };
-HlePatchSet patchSet = {"T1212N", "MVC2 US v1.001 unsigned divide", patches, 1};
+HlePatchSet patchSet = {"T1212N", "MVC2 US v1.001", patches, 2};
 HLE_REGISTER_PATCH_SET(patchSet);
 
 } // namespace
