@@ -175,6 +175,7 @@ template void WriteMem_aica_reg<>(u32 addr, u32 data);
 static int DreamcastSecond(int tag, int c, int j)
 {
 	RealTimeClock++;
+	NOTICE_LOG(AICA, "emu-second: rtc=%u", RealTimeClock);
 
 	prof_periodical();
 
