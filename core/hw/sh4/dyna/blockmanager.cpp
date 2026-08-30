@@ -4,6 +4,7 @@
 */
 
 #include <algorithm>
+#include <atomic>
 #include <set>
 #include <map>
 #include "blockmanager.h"
@@ -34,6 +35,9 @@ bool unprotected_pages[RAM_SIZE_MAX/PAGE_SIZE];
 static std::set<RuntimeBlockInfo*> blocks_per_page[RAM_SIZE_MAX/PAGE_SIZE];
 
 static bm_Map blkmap;
+#ifdef VITA_JIT_RUN_PROFILE
+static u32 jitProfileSecond;
+#endif
 // Stats
 u32 protected_blocks;
 u32 unprotected_blocks;
@@ -212,9 +216,72 @@ void bm_DiscardBlock(RuntimeBlockInfo* block)
 	block_ptr->Discard();
 }
 
+static std::atomic<bool> jitDumpRequested;
+
+void bm_RequestJitBlockDump()
+{
+	jitDumpRequested.store(true, std::memory_order_release);
+}
+
+static void bm_DumpJitBlocks()
+{
+	if (!jitDumpRequested.exchange(false, std::memory_order_acq_rel))
+		return;
+
+	const std::string path = get_writable_data_path("jit_blocks.txt");
+	FILE *file = fopen(path.c_str(), "wb");
+	if (file == nullptr)
+	{
+		WARN_LOG(DYNAREC, "PROFILER: cannot write %s", path.c_str());
+		return;
+	}
+	for (const auto& entry : blkmap)
+	{
+		const RuntimeBlockInfoPtr& block = entry.second;
+		fprintf(file, "block %p %u %08X %u %u %u %u\n",
+				CC_RW2RX((void *)block->code), block->host_code_size, block->vaddr,
+				block->runs, block->guest_cycles, block->guest_opcodes,
+				block->host_opcodes);
+	}
+	fclose(file);
+	NOTICE_LOG(DYNAREC, "PROFILER: JIT block dump written, %d blocks", (int)blkmap.size());
+
+#ifdef VITA_JIT_RUN_PROFILE
+	const std::string ramPath = get_writable_data_path("sh4_main_ram.bin");
+	FILE *ramFile = fopen(ramPath.c_str(), "wb");
+	if (ramFile == nullptr)
+	{
+		WARN_LOG(DYNAREC, "JIT-RUN-PROFILE: cannot write %s", ramPath.c_str());
+	}
+	else
+	{
+		const size_t dumpSize = std::min<size_t>(VITA_JIT_PROFILE_RAM_BYTES, RAM_SIZE);
+		const size_t written = fwrite(mem_b.data, 1, dumpSize, ramFile);
+		fclose(ramFile);
+		NOTICE_LOG(DYNAREC, "JIT-RUN-PROFILE: RAM dump written, %u bytes", (u32)written);
+	}
+#endif
+}
+
 void bm_Periodical_1s()
 {
 	bm_CleanupDeletedBlocks();
+#ifdef VITA_JIT_RUN_PROFILE
+	++jitProfileSecond;
+	if (jitProfileSecond == VITA_JIT_PROFILE_WARMUP_SECONDS)
+	{
+		for (const auto& entry : blkmap)
+			entry.second->runs = 0;
+		NOTICE_LOG(DYNAREC, "JIT-RUN-PROFILE: measurement started");
+	}
+	else if (jitProfileSecond ==
+			VITA_JIT_PROFILE_WARMUP_SECONDS + VITA_JIT_PROFILE_DURATION_SECONDS)
+	{
+		bm_RequestJitBlockDump();
+		NOTICE_LOG(DYNAREC, "JIT-RUN-PROFILE: measurement complete");
+	}
+#endif
+	bm_DumpJitBlocks();
 }
 
 void bm_vmem_pagefill(void** ptr, u32 size_bytes)
@@ -228,6 +295,9 @@ void bm_vmem_pagefill(void** ptr, u32 size_bytes)
 void bm_Reset()
 {
 	bm_CleanupDeletedBlocks();
+#ifdef VITA_JIT_RUN_PROFILE
+	jitProfileSecond = 0;
+#endif
 	protected_blocks = 0;
 	unprotected_blocks = 0;
 

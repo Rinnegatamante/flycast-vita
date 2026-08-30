@@ -7,6 +7,7 @@
 #include "log/LogManager.h"
 #include "rend/gui.h"
 #include "oslib/oslib.h"
+#include "oslib/razor_capture.h"
 #include "debug/gdb_server.h"
 #include "archive/rzip.h"
 #include "rend/mainui.h"
@@ -43,6 +44,11 @@ int flycast_init(int argc, char* argv[])
 	{
 		LogManager::Init();
 		config::Settings::instance().load(false);
+		if (settings.content.path.empty() && !config::AutoStartContent.get().empty())
+		{
+			NOTICE_LOG(BOOT, "Auto-starting content %s", config::AutoStartContent.get().c_str());
+			settings.content.path = config::AutoStartContent.get();
+		}
 	}
 	gui_init();
 	os_CreateWindow();
@@ -50,6 +56,7 @@ int flycast_init(int argc, char* argv[])
 
 	debugger::init();
 	lua::init();
+	razorCaptureInit();
 
 	return 0;
 }
@@ -73,6 +80,7 @@ void SaveSettings()
 
 void flycast_term()
 {
+	razorCaptureTerm();
 	gui_cancel_load();
 	lua::term();
 	emu.term();

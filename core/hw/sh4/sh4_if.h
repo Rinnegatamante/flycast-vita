@@ -268,6 +268,8 @@ struct alignas(64) Sh4Context
 
 			u32 temp_reg;
 			int cycle_counter;
+			// Dynamic guest-cycle charge returned by a game-specific HLE handler.
+			int hle_cycles;
 		};
 		u64 raw[64-8];
 	};

@@ -22,6 +22,7 @@
 #include "hw/pvr/Renderer_if.h"
 #include "gui.h"
 #include "oslib/oslib.h"
+#include "oslib/razor_capture.h"
 #include "wsi/context.h"
 #include "cfg/option.h"
 #include "emulator.h"
@@ -83,8 +84,9 @@ void mainui_loop()
 
 	while (mainui_enabled)
 	{
-		mainui_rend_frame();
+		const bool rendered = mainui_rend_frame();
 		imguiDriver->present();
+		razorCaptureTick(rendered);
 
 		if (config::RendererType != currentRenderer || forceReinit)
 		{

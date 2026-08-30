@@ -88,6 +88,7 @@ void bm_Reset();
 void bm_ResetCache();
 void bm_ResetTempCache(bool full);
 void bm_Periodical_1s();
+void bm_RequestJitBlockDump();
 
 void bm_Init();
 void bm_Term();

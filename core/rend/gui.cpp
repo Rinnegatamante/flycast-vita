@@ -2833,11 +2833,23 @@ void gui_display_ui()
 	{
 		if (!settings.content.path.empty())
 		{
-#ifndef __ANDROID__
-			commandLineStart = true;
+#ifdef __vita__
+			// Let one-time GUI setup settle before the loader changes kubridge
+			// mappings from its worker thread.
+			static int startupWarmupFrames;
+			if (startupWarmupFrames < 15)
+			{
+				++startupWarmupFrames;
+			}
+			else
 #endif
-			gui_start_game(settings.content.path);
-			return;
+			{
+#ifndef __ANDROID__
+				commandLineStart = true;
+#endif
+				gui_start_game(settings.content.path);
+				return;
+			}
 		}
 	}
 

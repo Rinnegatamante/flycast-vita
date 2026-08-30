@@ -27,6 +27,7 @@
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_mem.h"
 #include "hw/sh4/sh4_sched.h"
+#include "hw/sh4/dyna/hle_patch.h"
 #include "hw/holly/sb_mem.h"
 #include "cheats.h"
 #include "oslib/audiostream.h"
@@ -679,6 +680,10 @@ void loadGameSpecificSettings()
 
 	// Reload per-game settings
 	config::Settings::instance().load(true);
+
+	// The product id is now known. Candidate bytes are verified lazily when
+	// their first SH4 block is compiled.
+	hle_Init();
 
 	if (config::ForceWindowsCE)
 	{

@@ -381,6 +381,9 @@ extern Option<bool> ForceWindowsCE;
 extern Option<bool> AutoLoadState;
 extern Option<bool> AutoSaveState;
 extern Option<int> SavestateSlot;
+// Content launched at startup when no frontend path was supplied. It is global
+// because the game id and per-game configuration are not known yet.
+extern Option<std::string, false> AutoStartContent;
 extern Option<bool> ForceFreePlay;
 extern Option<bool> FetchBoxart;
 extern Option<bool> BoxartDisplayMode;

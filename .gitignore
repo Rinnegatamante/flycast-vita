@@ -10,3 +10,8 @@ out/
 # JetBrains IDES
 .idea/
 cmake-build-*/
+
+# Local Vita optimization builds and repository-private dependencies
+build-vita/
+build-vita-deps/
+build-regression/

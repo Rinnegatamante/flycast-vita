@@ -32,6 +32,7 @@ using namespace vixl::aarch32;
 #include "hw/sh4/sh4_core.h"
 #include "hw/sh4/dyna/ngen.h"
 #include "hw/sh4/dyna/ssa_regalloc.h"
+#include "hw/sh4/dyna/hle_patch.h"
 #include "hw/sh4/sh4_mem.h"
 #include "cfg/option.h"
 
@@ -2037,6 +2038,64 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 
 	block->code = (DynarecCodeEntryPtr)emit_GetCCPtr();
 
+	if (HleNativeFn hle = hle_LookupNative(block->vaddr))
+	{
+		u8 *hleStart = ass.GetCursorAddress<u8 *>();
+		u32 cycles = block->guest_cycles;
+		if (!ImmediateA32::IsImmediateA32(cycles))
+			cycles &= ~3;
+
+#ifdef VITA_JIT_RUN_PROFILE
+		ass.Mov(r0, reinterpret_cast<uintptr_t>(&block->runs));
+		ass.Ldr(r1, MemOperand(r0));
+		ass.Add(r1, r1, 1);
+		ass.Str(r1, MemOperand(r0));
+#endif
+		if (!mmu_enabled())
+		{
+			ass.Sub(SetFlags, r9, r9, cycles);
+		}
+		else
+		{
+			ass.Ldr(r0, MemOperand(r8, rcbOffset(cntx.cycle_counter)));
+			ass.Sub(SetFlags, r0, r0, cycles);
+			ass.Str(r0, MemOperand(r8, rcbOffset(cntx.cycle_counter)));
+			ass.Mov(r4, block->vaddr);
+			storeSh4Reg(r4, reg_nextpc);
+		}
+		call(intc_sched, le);
+
+		// The handler adds the cost of the whole guest region. Seed it with the
+		// negative entry-block debit so the resulting charge is exact.
+		ass.Mov(r0, (u32)-(s32)cycles);
+		ass.Str(r0, MemOperand(r8, rcbOffset(cntx.hle_cycles)));
+		call((void *)hle);
+		ass.Ldr(r0, MemOperand(r8, rcbOffset(cntx.hle_cycles)));
+		if (!mmu_enabled())
+		{
+			ass.Sub(r9, r9, r0);
+		}
+		else
+		{
+			ass.Ldr(r1, MemOperand(r8, rcbOffset(cntx.cycle_counter)));
+			ass.Sub(r1, r1, r0);
+			ass.Str(r1, MemOperand(r8, rcbOffset(cntx.cycle_counter)));
+		}
+
+		block->BlockType = BET_DynamicRet;
+		loadSh4Reg(r4, reg_nextpc);
+		block->relink_offset = ass.GetCursorOffset();
+		block->relink_data = 0;
+		relinkBlock((DynaRBI *)block);
+		ass.Finalize();
+		emit_Skip(ass.GetCursorOffset());
+
+		u8 *end = ass.GetCursorAddress<u8 *>();
+		block->host_opcodes = (end - hleStart) / 4;
+		block->host_code_size = end - (u8 *)block->code;
+		return;
+	}
+
 	//reg alloc
 	reg.DoAlloc(block, alloc_regs, alloc_fpu);
 
@@ -2120,6 +2179,13 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 	}
 #ifdef __vita__
 	}
+#endif
+#ifdef VITA_JIT_RUN_PROFILE
+	// Profiling build only: count entries without perturbing normal builds.
+	ass.Mov(r0, reinterpret_cast<uintptr_t>(&block->runs));
+	ass.Ldr(r1, MemOperand(r0));
+	ass.Add(r1, r1, 1);
+	ass.Str(r1, MemOperand(r0));
 #endif
 	//scheduler
 	u32 cyc = block->guest_cycles;

@@ -22,6 +22,13 @@ option(LIBRETRO "Build libretro core" OFF)
 option(USE_OPENGL "Use OpenGL API" ON)
 option(USE_VIDEOCORE "RPI: use the legacy Broadcom GLES libraries" OFF)
 option(APPLE_BREAKPAD "macOS: Build breakpad client and dump symbols" OFF)
+option(VITA_VELF_SYMBOLS "Vita: keep section headers and .symtab in the .velf" OFF)
+option(VITA_LTO "Vita: enable link-time optimization" OFF)
+option(VITA_JIT_RUN_PROFILE "Vita: instrument SH4 JIT block executions" OFF)
+set(VITA_VITAGL_ROOT "" CACHE PATH "Private vitaGL prefix containing include/vitaGL.h and lib/libvitaGL.a")
+set(VITA_JIT_PROFILE_WARMUP_SECONDS 15 CACHE STRING "Vita: seconds before resetting JIT run counters")
+set(VITA_JIT_PROFILE_DURATION_SECONDS 15 CACHE STRING "Vita: seconds of JIT run-counter sampling")
+set(VITA_JIT_PROFILE_RAM_BYTES 2097152 CACHE STRING "Vita: bytes of SH4 RAM to dump with a JIT profile")
 
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/shell/cmake")
 
@@ -96,8 +103,19 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/core/version.h.in" "${CMAKE_CURRENT_
 if(VITA)
 	include("${VITASDK}/share/vita.cmake" REQUIRED)
 
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-q,--wrap,memcpy,--wrap,memset,--wrap,malloc,--wrap,memalign,--wrap,free,--wrap,calloc,--wrap,realloc -flto -O3 -DNDEBUG -fno-optimize-sibling-calls -fsigned-char -fno-short-enums -marm")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q,--wrap,malloc,--wrap,memalign,--wrap,free,--wrap,calloc,--wrap,realloc -flto -O3 -DNDEBUG -fno-optimize-sibling-calls -fsigned-char -fno-short-enums -marm")
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-q,--wrap,memcpy,--wrap,memset,--wrap,malloc,--wrap,memalign,--wrap,free,--wrap,calloc,--wrap,realloc -O3 -DNDEBUG -fno-optimize-sibling-calls -ffunction-sections -fdata-sections -fsigned-char -fno-short-enums -marm")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q,--wrap,malloc,--wrap,memalign,--wrap,free,--wrap,calloc,--wrap,realloc -O3 -DNDEBUG -fno-optimize-sibling-calls -ffunction-sections -fdata-sections -fsigned-char -fno-short-enums -marm")
+	if(VITA_LTO)
+		string(APPEND CMAKE_CXX_FLAGS " -flto")
+		string(APPEND CMAKE_C_FLAGS " -flto")
+	else()
+		string(APPEND CMAKE_CXX_FLAGS " -fno-lto")
+		string(APPEND CMAKE_C_FLAGS " -fno-lto")
+	endif()
+	message(STATUS "Vita: LTO ${VITA_LTO}")
+
+	# Leave enough room for vita-elf-create metadata as per-game code grows.
+	set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,max-page-size=0x10000 -Wl,--gc-sections")
 
 	set(VITA_APP_NAME "Flycast")
 	set(VITA_TITLEID  "FLYCASTDC")
@@ -110,9 +128,28 @@ if(VITA)
 	enable_language(ASM)
 
 	add_executable(${PROJECT_NAME} core/emulator.cpp)
+	if(NOT VITA_VITAGL_ROOT)
+		message(FATAL_ERROR
+			"Vita builds require a private vitaGL prefix. Run scripts/build-vita.ps1 -BuildVitaGL.")
+	endif()
+	set(VITA_VITAGL_LIBRARY "${VITA_VITAGL_ROOT}/lib/libvitaGL.a")
+	set(VITA_VITAGL_HEADER "${VITA_VITAGL_ROOT}/include/vitaGL.h")
+	if(NOT EXISTS "${VITA_VITAGL_LIBRARY}" OR NOT EXISTS "${VITA_VITAGL_HEADER}")
+		message(FATAL_ERROR "Incomplete private vitaGL prefix: ${VITA_VITAGL_ROOT}")
+	endif()
+	target_include_directories(${PROJECT_NAME} BEFORE PRIVATE "${VITA_VITAGL_ROOT}/include")
+	message(STATUS "Vita: using private vitaGL archive ${VITA_VITAGL_LIBRARY}")
 	target_compile_definitions(${PROJECT_NAME} PRIVATE EGL_NO_PLATFORM_SPECIFIC_TYPES)
 	# target_compile_definitions(${PROJECT_NAME} PRIVATE TARGET_NO_EXCEPTIONS)
 	target_compile_definitions(${PROJECT_NAME} PRIVATE VITA _GNU_SOURCE)
+	if(VITA_JIT_RUN_PROFILE)
+		target_compile_definitions(${PROJECT_NAME} PRIVATE
+			VITA_JIT_RUN_PROFILE
+			VITA_JIT_PROFILE_WARMUP_SECONDS=${VITA_JIT_PROFILE_WARMUP_SECONDS}
+			VITA_JIT_PROFILE_DURATION_SECONDS=${VITA_JIT_PROFILE_DURATION_SECONDS}
+			VITA_JIT_PROFILE_RAM_BYTES=${VITA_JIT_PROFILE_RAM_BYTES})
+		message(STATUS "Vita: SH4 JIT run profiler enabled")
+	endif()
 	target_compile_definitions(${PROJECT_NAME} PRIVATE GLES)
 
 	# For proper fseek/ftell definition in external dependency "libchdr", doesn't impact anything else:
@@ -408,6 +445,18 @@ if(NOT LIBRETRO)
 	
 	if (VITA)
 		set(SDL2_FOUND 1)
+		set(_vita_sdl_config "${VITASDK}/arm-vita-eabi/include/SDL2/SDL_config.h")
+		if(NOT EXISTS "${_vita_sdl_config}")
+			message(FATAL_ERROR "Vita: no SDL2 installation found at ${_vita_sdl_config}.")
+		endif()
+		file(STRINGS "${_vita_sdl_config}" _vita_sdl_opengles2
+			REGEX "^#define[ \t]+SDL_VIDEO_OPENGL_ES2[ \t]+1")
+		file(STRINGS "${_vita_sdl_config}" _vita_sdl_vgl
+			REGEX "^#define[ \t]+SDL_VIDEO_VITA_VGL[ \t]+1")
+		if(NOT _vita_sdl_opengles2 OR NOT _vita_sdl_vgl)
+			message(FATAL_ERROR
+				"Vita: installed SDL2 lacks the vitaGL backend. Rebuild it with scripts/build-vita.ps1 -BuildSDL.")
+		endif()
 		target_link_libraries(${PROJECT_NAME} PRIVATE SDL2)
 		target_compile_definitions(${PROJECT_NAME} PRIVATE USE_SDL USE_SDL_AUDIO)
 		target_include_directories(${PROJECT_NAME} PRIVATE ${VITASDK}/arm-vita-eabi/include/SDL2)
@@ -511,7 +560,7 @@ if(NINTENDO_SWITCH AND USE_GLES)
 endif()
 
 if(VITA)
-	target_link_libraries(${PROJECT_NAME} PRIVATE vitaGL vitashark SceShaccCg_stub SceShaccCgExt taihen_stub mathneon curl ssl crypto)
+	target_link_libraries(${PROJECT_NAME} PRIVATE "${VITA_VITAGL_LIBRARY}" vitashark SceShaccCg_stub SceShaccCgExt taihen_stub mathneon curl ssl crypto)
 endif()
 
 if(UNIX AND NOT APPLE AND NOT ANDROID)
@@ -653,6 +702,7 @@ if(VITA)
 			SceTouch_stub
 			SceGxm_stub
 			SceVshBridge_stub
+			ScePerf_stub
 			-Wl,--whole-archive SceSysmodule_stub -Wl,--no-whole-archive
 			-Wl,--whole-archive SceNetCtl_stub -Wl,--no-whole-archive
 	)
@@ -903,6 +953,8 @@ target_sources(${PROJECT_NAME} PRIVATE
 		core/hw/sh4/dyna/decoder.h
 		core/hw/sh4/dyna/decoder_opcodes.h
 		core/hw/sh4/dyna/driver.cpp
+		core/hw/sh4/dyna/hle_patch.cpp
+		core/hw/sh4/dyna/hle_patch.h
 		core/hw/sh4/dyna/ngen.h
 		core/hw/sh4/dyna/shil_canonical.h
 		core/hw/sh4/dyna/shil.cpp
@@ -985,6 +1037,7 @@ elseif(VITA)
 		core/linux/common.cpp
 		core/linux/unwind_info.cpp
 		core/linux/vita_fault_handler.cpp
+		core/linux/vita_razor.cpp
 		core/linux/vita_vmem.cpp)
 else()
 	target_sources(${PROJECT_NAME} PRIVATE
@@ -1068,6 +1121,7 @@ target_sources(${PROJECT_NAME} PRIVATE
 		core/oslib/directory.h
 		core/oslib/host_context.h
 		core/oslib/oslib.h
+		core/oslib/razor_capture.h
 		core/lua/lua.cpp
 		core/lua/lua.h)
 
@@ -1711,7 +1765,13 @@ if(NINTENDO_SWITCH)
 endif()
 
 if(VITA)
-	vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE STRIPPED NOASLR)
+	if(VITA_VELF_SYMBOLS)
+		set(VITA_SELF_STRIPPED "")
+		message(STATUS "Vita: keeping symbols in flycast.velf")
+	else()
+		set(VITA_SELF_STRIPPED STRIPPED)
+	endif()
+	vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE ${VITA_SELF_STRIPPED} NOASLR)
 	vita_create_vpk(${VITA_VPKNAME}.vpk ${VITA_TITLEID} eboot.bin
 		VERSION ${VITA_VERSION}
 		NAME ${VITA_APP_NAME}
