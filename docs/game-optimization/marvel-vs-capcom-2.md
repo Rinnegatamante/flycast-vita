@@ -255,12 +255,151 @@ Control artifacts:
 - SELF: `32A5718E6F80A9752C34BC9E1C7C9C1B5ECEBE3194E0881B3A8BA34716B5E0B5`
 - target log: `1B522AD2DD4F4F9B5632DD5BCD35A5A176C9A854AF925181C73806CAE5CA849E`
 
+## Rejected iteration: vertex-emission block HLE
+
+Native replacements of `0x8C12FE5A` (44 bytes, CRC32 `F2923FBC`) and
+`0x8C12FE5C` (42 bytes, CRC32 `6EE40942`) covered exactly one decoded block,
+through the PREF delay slot at `0x8C12FE84`. The existing entry debit was
+reused as the complete block cost; no scheduler boundary was removed. The
+handlers preserved both ordered SQ flushes, including RAM destinations, and
+all register/flag residue. Full-MMU compilation was excluded; unsupported
+runtime state used the original instruction handlers.
+
+The initial TA-only guard fell back frequently when the game used this same
+block to write a RAM command buffer. The revised version handled both routes
+and kept direct RAM reads after the first flush, including possible overlap.
+A diagnostic shadow mode compared the actual original interpreter handlers
+against the native implementation without dispatching either shadow's SQ
+packets. It compared all GPR/FPRs, PC/PR/FPUL/SR/FPSCR, cycle fields, both SQ
+buffers and the ordered packet addresses/data. Suppressed RAM flushes were
+allowed only when they could not affect the subsequent reads. The final
+candidate passed 4,096 real calls for each entry/route combination (16,384
+total), with both CRCs verified. This is workload coverage, not an exhaustive
+float/mode correctness claim.
+
+Three alternating off/on pairs used the **same executable**, diagnostics off,
+35-second launch windows, and exactly RTC `1988906533..1988906549` (16 guest
+seconds) for every measurement. Configs differed only in `HlePatches` and were
+read back and hash-checked before each launch. State/config identities were
+also confirmed before the experiment.
+
+| Mode | Guest/wall ratios | Mean | Population standard deviation |
+| --- | --- | ---: | ---: |
+| HLE off | 0.820176, 0.820555, 0.822073 | 0.820935 | 0.000819 |
+| Vertex HLE on | 0.793454, 0.793611, 0.794439 | 0.793835 | 0.000432 |
+
+Decision: **reject**, 3.301% slower. No fallback occurred in the measured HLE
+runs. The wrapper/context traffic and dynamic exit were not offset by the
+native block; this causal explanation is an inference from generated code,
+not a separately measured cost breakdown. All six runs ended with the
+expected `ProcessKilled`; inspected screenshots remained coherent. Audio was
+not captured. The source was removed from the active build and is recoverable
+from the artifact copy below.
+
+Evidence root: `build-vita/devkit-logs/mvc2-hle-vertex-prepare/`.
+`shadow-final.log` contains all four validation passes. `ab-final/` preserves
+the final candidate source, exact raw ELF/VELF/SELF/SFO, six read-back configs
+and six append-only logs. Screenshot/XML launch folders are
+`build-vita/devkit-logs/mvc2-hle-vertex-ab-{1,2,3}-{off,on}/`.
+
+- raw ELF: `6155DF50A722F99B3194404AA8E771CE83DFCB9A47699011C9BFD7A9F7C114D4`
+- VELF: `756E36F0B39A93222EC1E976F2F2CAA40CBD19EF96DB654D68269BF6C348FE84`
+- SELF: `D1BA3B299D30B0FC22FF779AC091F8E2525C11A7B216607BFD81D3AD1C9E8A55`
+- candidate source: `7EF58FEC93ABECBA5E4779BB95E482B5E6CA014180FD3E4DAD10E7A51204D56A`
+
+## Retained iteration: unsigned-division HLE
+
+`core/hw/sh4/hle/mvc2_us_division_1001.cpp` replaces only the nonzero-divisor
+block at `0x8C1291E2..0x8C12926C` (140 bytes, CRC32 `5598C45C`, product
+`T1212N`). The guest profile recorded 1,897,073 calls in its 15-guest-second
+measurement. The existing decoder already collapses the DIV0U/ROTCL/DIV1
+sequence, but its generic `shop_div32u` computes a 64-bit quotient/remainder.
+Here the high word is provably zero and the remainder register is restored
+from the stack before return. The HLE therefore needs only unsigned 32-bit
+division; object disassembly confirms a call to `__aeabi_uidiv`.
+
+Contract:
+
+- R0/R1 receive the quotient; R2 is restored from the guest stack; R15 += 4.
+- SR.M = 0, SR.Q = !quotient.bit0, SR.T = 0. Other status bits, all FPRs,
+  FPSCR, FPUL and PR remain unchanged; next PC is the preserved PR.
+- The only memory operation is the original stack read. Direct access is
+  guarded by RAM range, alignment, no-wrap and MMU-state checks. Nonstandard
+  state executes the original instructions, including divisor zero.
+- Full-MMU builds decline this patch through the new optional registry
+  eligibility callback. CRC failure still selects the normal JIT.
+- The entire region is exactly one decoded block. The handler adds back the
+  complete pre-debited block cost, including the decoder's 64 collapsed guest
+  cycles (70 total with the current configuration). No scheduler boundary or
+  guest time is removed. The existing downclock/floatHack cost is reused,
+  not re-estimated from native instruction count.
+
+Validation: 1,589,914 host cases compared quotient and Q/M/T residue with an
+independent 32-step DIV1 model. The on-target `Mvc2HleValidate=yes` diagnostic
+then passed 16,384 real entries against the actual interpreter opcode
+handlers, comparing every GPR/FPR, PC/PR/FPUL/SR/FPSCR and cycle fields. That
+diagnostic was disabled for timing. The initial process-cold diagnostic launch
+is retained separately; every A/B launch also starts a fresh process/JIT,
+without deleting the persistent shader cache.
+
+The same-executable A/B protocol used for the rejected vertex candidate gave:
+
+| Mode | Guest/wall ratios | Mean | Population standard deviation |
+| --- | --- | ---: | ---: |
+| HLE off | 0.824657, 0.823257, 0.824402 | 0.824106 | 0.000609 |
+| Division HLE on | 0.829359, 0.829962, 0.829574 | 0.829632 | 0.000249 |
+
+Decision: **retain for this workload**, +0.671% throughput, from 82.41% to
+82.96% of real time. All three pairs improve; no measured HLE run enters the
+fallback. All use RTC `1988906533..1988906549`, complete the fixed observation
+window and end with the expected `ProcessKilled`. Inspected frames remain
+coherent. This is still below full speed; audio has not been captured or
+auditioned and additional match/stage coverage is required.
+
+Evidence root: `build-vita/devkit-logs/mvc2-hle-divide-prepare/`.
+`division-contract-test.cpp` is the reproducible host test (`g++ -std=c++11
+-O3`); `shadow-final.log` records the target differential pass. `ab-final/`
+contains the source/executable snapshots, six byte-verified configs and six
+logs. Launch screenshots/XML are in
+`build-vita/devkit-logs/mvc2-hle-divide-ab-{1,2,3}-{off,on}/`.
+
+- raw ELF: `5706A0EFA7684AA2BD6E415C46B5CB925F22D307E3EA66FEA3A0E028C8DDC90E`
+- VELF: `D7A1939E1AF33D4598006DA673E67411E28A41D5E1FBDE43044A8ACBBF7E7A04`
+- SELF: `1FECD798427D8A6C08697B9490514447A00B77B8F00E4691F4F44293568EB030`
+- HLE source: `03443F6C69DB37B5FC6A9B086E702816ECF86E6B5C46B7915A3BB420CFC19FBE`
+- host test source: `9EC8C47DC24D4010457E862D81BFC26CB4A2FF1EF66034A56375854A5EBDC2A6`
+- shadow log: `8BBAAEF683E15BB1435847D0A612B8E48D90A229D4430313AC877F37D2BBC835`
+- HLE-off config: `371BAA650FEDF081164FB2B28B5D725E4E4307EB8BA633BEF2611D0E60DDE626`
+- HLE-on config: original fixed-workload config, unchanged.
+
+The build retains symbols, LTO off, and the adjacent
+`build-vita/sce_sys/param.sfo` with integer `ATTRIBUTE2=12` and the original
+SFO hash. No other game-specific patch set is active.
+
+Post-change PC sample capture:
+`build-vita/devkit-logs/occam/mvc2-state-hle-divide-pc/`. The 20-second
+host-triggered capture completed with 4,924,738 application-range samples;
+its exact raw ELF and VELF match the A/B hashes above. RZR SHA-256:
+`E9C0C2AFA966320AD4B2E86B2E8CD743D46B9EE9B96B284FA88E6F4AE3EBBE54`.
+`__udivmoddi4` falls from 2.41% of samples in the NEON profile to 0.66%;
+`__udivsi3` rises from 0.67% to 1.43%, and the new HLE entry accounts for
+0.97%. Remaining leaders are `SH4_TCB` 41.11%, TA polygon parsing 9.85% and
+`make_index` 6.63%. These are waypoint-based function rankings in wall-time
+captures, not a precise cost decomposition or a separate speedup estimate.
+The longer 65-second profiling launch completed normally.
+
+After profiling, target config and slot-6 state were read back again and
+matched their original SHA-256 values exactly. Diagnostic shadow checking is
+off and `HlePatches=yes` is restored. The DevKit process is stopped after the
+completed loop; the preserved user savestate is unchanged.
+
 ## Next evidence gate
 
-1. Prioritize the SH4 vertex-transform/submission cluster at
-   `0x8C12FDB6..0x8C12FF9C` against the NEON baseline. Any HLE replacement must
-   first prove complete register/memory residue, dynamic cycle accounting and
-   revision-specific CRC, with a normal-JIT fallback on mismatch.
+1. Use the post-division profile for the next candidate. The vertex cluster
+   still needs an algorithmic/vector or data-movement improvement; merely
+   translating its small emission block to C++ lost performance. Any broader
+   HLE region must retain intermediate scheduler/interrupt checks as well as
+   complete register/memory residue and dynamic cycle accounting.
 2. Capture audio or perform a supervised listening pass before claiming that
    game-speed improvement preserves pacing.
 3. Exercise additional heavy matches/stages; this one savestate is not a

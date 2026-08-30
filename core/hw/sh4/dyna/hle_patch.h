@@ -12,6 +12,8 @@ struct HlePatch
 	u32 crc;
 	HleNativeFn native;
 	int verified;
+	// Optional compile-time eligibility check (e.g. unsupported MMU mode).
+	bool (*eligible)() = nullptr;
 };
 
 struct HlePatchSet

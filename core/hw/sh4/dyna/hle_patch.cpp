@@ -89,7 +89,8 @@ HleNativeFn hle_LookupNative(u32 vaddr)
 	{
 		HlePatch& patch = activePatchSet->patches[i];
 		if (patch.vaddr == vaddr)
-			return verifyPatch(patch) ? patch.native : nullptr;
+			return (patch.eligible == nullptr || patch.eligible()) && verifyPatch(patch)
+					? patch.native : nullptr;
 	}
 	return nullptr;
 }
