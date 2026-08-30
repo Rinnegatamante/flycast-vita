@@ -55,6 +55,18 @@ static void loadSpecialSettings()
 
 		NOTICE_LOG(BOOT, "Game ID is [%s]", prod_id.c_str());
 
+#ifdef __vita__
+		// The Marvel vs. Capcom 2 Vita workload spends most guest time in FTRV/FIPR
+		// vertex code. Keep the measured NEON dynarec path enabled even when an old
+		// global configuration has Dynarec.useNeon disabled. A per-game setting can
+		// still override this default when settings are reloaded below.
+		if (prod_id == "T1212N")
+		{
+			INFO_LOG(BOOT, "Enabling NEON SH4 FPU path for Marvel vs. Capcom 2");
+			config::DynarecUseNeon.override(true);
+		}
+#endif
+
 		if (ip_meta.isWindowsCE() || config::ForceWindowsCE
 				|| prod_id == "T26702N") // PBA Tour Bowling 2001
 		{

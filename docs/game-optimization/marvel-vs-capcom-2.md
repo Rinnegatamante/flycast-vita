@@ -1,9 +1,10 @@
 # Marvel vs. Capcom 2 (US v1.001) Vita optimization ledger
 
 Status: deterministic framedrop savestate established; baseline, host profile
-and guest-block profile collected. `Dynarec.useNeon=yes` is the first retained
-candidate, improving guest-time throughput by 2.74% in this workload. This is
-not yet evidence of full-speed or whole-game correctness.
+and guest-block profile collected. The first retained branch specialization
+enables the NEON SH4 FPU path for `T1212N`, improving guest-time throughput by
+2.78% in this workload. This is not yet evidence of full-speed or whole-game
+correctness.
 
 ## Fixed target identity
 
@@ -99,6 +100,7 @@ corruption or delayed failure. Host frame rate alone is not sufficient.
 | Functional boot | C++ tree `0344626cd`; SFO workflow `b11ececfa`; ELF `B142C2C3FDF483CB27AB9C48D5ADE6B6ACDD6BDFF5BD6058D6956FC283C2B9A3` | Fresh process, no input, fixed 60 s window | One run; cache state not characterized | Not measured | Audio not captured; 60 FPS overlay is not a speed measurement | Reached `PRESS START BUTTON`; expected `ProcessKilled`; no crash/abort marker. Black side wedges during the title effect need an A/B check with the widescreen hack disabled. | None; Razor disabled | Boot passes only; not a performance baseline |
 | Slot-6 baseline, VFP dynarec | Tree `f9e09affa`; raw ELF `6524A2E52A00FE58A8941E10F15ABA8D4CD844200BDAC2E9E0301C3C99A85049`; VELF `E54F0173D940E5B97E8627150F9BF60310F98C1CA2B816E9B2A6BE1809C3C03E` | Exact slot-6 state, `Dynarec.useNeon=no`, fixed 30 s | Three repeated runs | Guest/wall 0.8003 mean (80.03%); standard deviation 0.0035; individual measured deltas 15-16 guest seconds over 18.85-19.98 wall seconds | Audio not captured; guest speed below full speed | 48-49 FPS final overlays; coherent match frames; all three XML outcomes are expected `ProcessKilled` | Host PC sample and JIT profile below | Accepted baseline |
 | NEON FPU dynarec | Same tree and binaries as baseline; config `E2236B333362C7E253FFC8FED7AA38B813F35F54FAC3073FCF4A18CFA13FD41F` | Exact slot-6 state; only delta is `Dynarec.useNeon=yes`; fixed 30 s | Three repeated runs | Guest/wall 0.82227 mean (82.23%); standard deviation 0.00047; +2.19 percentage points, +2.74% relative | Audio not captured; still below full speed | 51-52 FPS final overlays; coherent match frames; all three XML outcomes are expected `ProcessKilled` | Re-profile below | Retain provisionally; improvement exceeds baseline variance |
+| `T1212N` NEON branch default | Raw ELF `4DA6724CC7B0D9B184B36EBCA1D2F604692FF921F33A6C400A2A9C5EDD57368A`; VELF `EB3F839B69D94E34C43C8B04606511E90A5C734B0FD846C1332198052A54C1DB`; SELF `99393BFC13BE0C97EE122012C1719CA5E5A1E602E412FA4151C1951CEA4836FA` | Exact slot-6 state; baseline config `69C99B54B98C4A1308C6E420C579FFEFDB1FCB086719D4800FA1F439CC0D3C60` still says `Dynarec.useNeon=no`; source sets the game default before per-game settings; fixed 30 s | Three repeated runs | Guest/wall 0.822594 mean (82.259%); standard deviation 0.000348; +2.226 percentage points, +2.782% relative to VFP baseline | Audio not captured; still below full speed | Three coherent match frames; one transient overlay sampled 0 FPS and is excluded as a metric; all three XML outcomes are expected `ProcessKilled` | Existing NEON re-profile applies to the same dynarec path | Retain; source integration reproduces the config-only A/B |
 
 First-boot artifacts are under
 `build-vita/devkit-logs/mvc2-first-boot/20260830-164948/run-001/`:
@@ -120,6 +122,14 @@ Repeated NEON candidate:
 `build-vita/devkit-logs/mvc2-state-neon-a/20260830-173546/`.
 The copied append-only target log has SHA-256
 `746B18FEBAE0569300291EE33229C636949C8915771AA64EE3F8C429665DDE3A`.
+
+Source-integrated NEON default, tested against the byte-verified baseline
+configuration:
+`build-vita/devkit-logs/mvc2-state-neon-source/20260830-174515/`.
+The copied append-only target log has SHA-256
+`CB904DA679FECC32039ADD3762FF306B65F9D33CB2E14EAF01DDC24A6F31CCA3`.
+All three sessions begin at RTC `1988906533`; the individual guest/wall ratios
+are 0.822199, 0.822538 and 0.823045.
 
 The unprofiled iteration build identities are:
 
@@ -193,13 +203,11 @@ This ranking is a candidate locator, not instruction-level host timing.
 
 ## Next evidence gate
 
-1. Turn the retained NEON setting into an explicit game-branch default and
-   verify that it remains the only runtime delta.
-2. Test a single source-level TA/JIT hypothesis against the NEON baseline,
+1. Test a single source-level TA/JIT hypothesis against the NEON baseline,
    with at least three repeats when the delta is small.
-3. Capture audio or perform a supervised listening pass before claiming that
+2. Capture audio or perform a supervised listening pass before claiming that
    game-speed improvement preserves pacing.
-4. Exercise additional heavy matches/stages; this one savestate is not a
+3. Exercise additional heavy matches/stages; this one savestate is not a
    whole-game correctness result.
-5. Re-profile every retained material change and perform final LTO-on versus
+4. Re-profile every retained material change and perform final LTO-on versus
    LTO-off A/B only after representative gameplay is full speed.
