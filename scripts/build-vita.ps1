@@ -14,7 +14,8 @@ param(
     [switch]$BuildSDL,
     [switch]$Clean,
     [switch]$Symbols,
-    [switch]$LTO
+    [switch]$LTO,
+    [switch]$JitRunProfile
 )
 
 Set-StrictMode -Version Latest
@@ -312,6 +313,7 @@ if (($BuildVitaGL -or $BuildSDL) -and (Test-Path -LiteralPath $buildPath)) {
 
 $symbolOption = if ($Symbols) { 'ON' } else { 'OFF' }
 $ltoOption = if ($LTO) { 'ON' } else { 'OFF' }
+$jitRunProfileOption = if ($JitRunProfile) { 'ON' } else { 'OFF' }
 Invoke-Native $cmake @(
     '-S', $root,
     '-B', $buildPath,
@@ -321,6 +323,7 @@ Invoke-Native $cmake @(
     "-DCMAKE_BUILD_TYPE=$BuildType",
     "-DVITA_VELF_SYMBOLS=$symbolOption",
     "-DVITA_LTO=$ltoOption",
+    "-DVITA_JIT_RUN_PROFILE=$jitRunProfileOption",
     "-DVITA_VITAGL_ROOT=$privatePrefix",
     '-DCMAKE_POLICY_VERSION_MINIMUM=3.5'
 )

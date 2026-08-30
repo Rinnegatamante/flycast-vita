@@ -27,8 +27,12 @@ function Resolve-FromRoot {
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $resolvedBuild = Resolve-FromRoot -Path $BuildDir -Root $root
 $elf = Join-Path $resolvedBuild 'flycast'
+$velf = Join-Path $resolvedBuild 'flycast.velf'
 if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) {
     throw "Missing unstripped ELF: $elf"
+}
+if (-not (Test-Path -LiteralPath $velf -PathType Leaf)) {
+    throw "Missing Vita ELF: $velf"
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
@@ -49,7 +53,9 @@ if (-not (Test-Path -LiteralPath $occam -PathType Leaf)) {
 # Preserve the exact ELF used for symbolization. Never analyze a capture with a
 # newer build that merely happens to have the same path.
 $snapshotElf = Join-Path $resolvedOutput 'flycast.elf'
+$snapshotVelf = Join-Path $resolvedOutput 'flycast.velf'
 Copy-Item -LiteralPath $elf -Destination $snapshotElf -Force
+Copy-Item -LiteralPath $velf -Destination $snapshotVelf -Force
 $capture = Join-Path $resolvedOutput 'cpu-trace.rzr'
 $xml = Join-Path $resolvedOutput 'cpu-trace.xml'
 
@@ -58,7 +64,9 @@ $captureArgs = @(
     $capture,
     "--length=$LengthMs",
     "--mode=$Mode",
-    "--elf=$snapshotElf",
+    # Occam matches this converted ELF against the module loaded from the SELF.
+    # The pre-conversion ELF remains beside it for fixed-address analysis.
+    "--elf=$snapshotVelf",
     '--take-screenshots=no',
     '--wrap-buffer=yes'
 )

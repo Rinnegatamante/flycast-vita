@@ -17,7 +17,8 @@ param(
     [string]$CompletionPattern,
     [ValidateRange(0, 120)]
     [int]$PostCompletionSeconds = 5,
-    [switch]$Screenshot
+    [switch]$Screenshot,
+    [switch]$NoDebug
 )
 
 Set-StrictMode -Version Latest
@@ -93,9 +94,13 @@ try {
             "/t:$Target",
             '/console:all',
             "/log:$xmlLog",
-            '/logFormat:xml',
-            '/debug',
-            '/kill',
+            '/logFormat:xml'
+        )
+        if (-not $NoDebug) {
+            $runArgs += '/debug'
+            $runArgs += '/kill'
+        }
+        $runArgs += @(
             "/y:$Timeout",
             '/elf',
             $eboot
