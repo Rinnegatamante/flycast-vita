@@ -55,6 +55,63 @@ function Assert-Command {
     return $command.Source
 }
 
+function Get-SfoInt32Value {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$Key
+    )
+
+    [byte[]]$bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 20 -or
+        $bytes[0] -ne 0x00 -or $bytes[1] -ne 0x50 -or
+        $bytes[2] -ne 0x53 -or $bytes[3] -ne 0x46) {
+        throw "Invalid PARAM.SFO header: $Path"
+    }
+
+    $keyTableOffset = [BitConverter]::ToUInt32($bytes, 8)
+    $dataTableOffset = [BitConverter]::ToUInt32($bytes, 12)
+    $entryCount = [BitConverter]::ToUInt32($bytes, 16)
+
+    for ($index = 0; $index -lt $entryCount; ++$index) {
+        $entryOffset = 20 + 16 * $index
+        if ($entryOffset + 16 -gt $bytes.Length) {
+            throw "Truncated PARAM.SFO index table: $Path"
+        }
+
+        $keyOffset = [BitConverter]::ToUInt16($bytes, $entryOffset)
+        $dataFormat = [BitConverter]::ToUInt16($bytes, $entryOffset + 2)
+        $dataLength = [BitConverter]::ToUInt32($bytes, $entryOffset + 4)
+        $dataOffset = [BitConverter]::ToUInt32($bytes, $entryOffset + 12)
+        $keyStart = [int64]$keyTableOffset + $keyOffset
+        if ($keyStart -ge $bytes.Length) {
+            throw "Invalid PARAM.SFO key offset: $Path"
+        }
+
+        $keyEnd = $keyStart
+        while ($keyEnd -lt $bytes.Length -and $bytes[$keyEnd] -ne 0) {
+            ++$keyEnd
+        }
+        if ($keyEnd -ge $bytes.Length) {
+            throw "Unterminated PARAM.SFO key: $Path"
+        }
+
+        $entryKey = [Text.Encoding]::UTF8.GetString(
+            $bytes, [int]$keyStart, [int]($keyEnd - $keyStart))
+        if ($entryKey -eq $Key) {
+            if ($dataFormat -ne 0x0404 -or $dataLength -lt 4) {
+                throw "PARAM.SFO key '$Key' is not a 32-bit integer: $Path"
+            }
+            $valueOffset = [int64]$dataTableOffset + $dataOffset
+            if ($valueOffset + 4 -gt $bytes.Length) {
+                throw "Invalid PARAM.SFO data offset for '$Key': $Path"
+            }
+            return [BitConverter]::ToInt32($bytes, [int]$valueOffset)
+        }
+    }
+
+    throw "PARAM.SFO is missing required key '$Key': $Path"
+}
+
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $rootPrefix = $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 $buildPath = Resolve-InputPath -Path $BuildDir -BasePath $root
@@ -277,7 +334,22 @@ if (-not (Test-Path -LiteralPath $vpk -PathType Leaf) -or
     throw 'Build completed without producing Flycast.vpk and eboot.bin.'
 }
 
+$generatedParamSfo = Join-Path $buildPath "$([IO.Path]::GetFileName($vpk))_param.sfo"
+if (-not (Test-Path -LiteralPath $generatedParamSfo -PathType Leaf)) {
+    throw "Build completed without producing $generatedParamSfo."
+}
+$selfDirectory = Split-Path -Parent $eboot
+$sceSysDirectory = Join-Path $selfDirectory 'sce_sys'
+$runtimeParamSfo = Join-Path $sceSysDirectory 'param.sfo'
+New-Item -ItemType Directory -Path $sceSysDirectory -Force | Out-Null
+Copy-Item -LiteralPath $generatedParamSfo -Destination $runtimeParamSfo -Force
+$attribute2 = Get-SfoInt32Value -Path $runtimeParamSfo -Key 'ATTRIBUTE2'
+if ($attribute2 -ne 12) {
+    throw "Invalid ATTRIBUTE2 in $runtimeParamSfo`: expected 12, got $attribute2."
+}
+Write-Host "[build] Verified $runtimeParamSfo with ATTRIBUTE2=12."
+
 Write-Host '[build] Environment verified.'
-Get-Item -LiteralPath $vpk, $eboot |
+Get-Item -LiteralPath $vpk, $eboot, $runtimeParamSfo |
     Select-Object FullName, Length, LastWriteTime |
     Format-Table -AutoSize
