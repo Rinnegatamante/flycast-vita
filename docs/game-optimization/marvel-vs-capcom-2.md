@@ -201,10 +201,66 @@ The profiler reset at guest second 15, measured for 15 guest seconds, wrote
 
 This ranking is a candidate locator, not instruction-level host timing.
 
+## Rejected iteration: integer TA vertex classification
+
+Hypothesis: `make_index` spends meaningful critical-path time in the seven
+VFP comparisons used by `is_vertex_inf`. Baseline disassembly and per-PC
+Occam hits located most of its samples in or around the coordinate-validation
+loop (`0x81587200..0x8158726c`).
+
+The candidate replaced the NaN/huge-coordinate checks with unsigned IEEE-754
+bit comparisons against `0x7dcca14b` (`3.4e37f`). It retained the floating-point
+`z < 0` comparison to preserve negative-zero and host flush-to-zero behavior
+for negative denormals. Scalar `memcpy` bit casts compiled without temporary
+stack copies, leaving one VFP comparison on the ordinary vertex path instead
+of seven. The surrounding function nevertheless needed more integer-register
+spills. No invalid-vertex handling was removed.
+
+A host differential test, compiled with `g++ -std=c++11 -O3 -fno-fast-math`,
+passed 1,017,576 triples per mode with denormals both preserved and flushed.
+It includes all combinations of 26 edge bit patterns plus one million
+deterministic random triples. This is predicate evidence, not a substitute
+for the Vita gameplay run.
+
+Both target state and config were re-read before the candidate runs and
+still matched the fixed workload hashes. Results:
+
+| Build | Guest/wall ratios | Mean | Population standard deviation | Decision |
+| --- | --- | ---: | ---: | --- |
+| Integer-classification candidate | 0.818498, 0.821440, 0.821102 | 0.820347 | 0.001314 | Reject: no measured improvement |
+| Rebuilt NEON control after reverting candidate | 0.823766, 0.823172, 0.824275 | 0.823738 | 0.000451 | Keep as current branch build |
+
+The candidate is 0.412% slower than the contemporary control. All six runs
+restored RTC `1988906533`, advanced 16 guest seconds between measured markers,
+ended with the expected `ProcessKilled`, and produced coherent match frames.
+Audio was not captured. The source change was fully reverted; reducing this
+local instruction count did not improve this workload's critical path.
+
+Candidate artifacts:
+`build-vita/devkit-logs/mvc2-state-integer-validation-a/20260830-221134/`.
+The folder preserves the test source, candidate `ta_vtx.cpp`, exact config,
+raw ELF, VELF, SELF, SFO, target log, console/XML and screenshots.
+
+- raw ELF: `D9671AE24D64465B1CF3A1F47AC33E9B1D77A84FC3B014A7152B64A710159EDB`
+- VELF: `0A8767856F6FCE68873856C1FAA53136F70B424853E8E5E27C55DD69E2FCD73B`
+- SELF: `4F925300E0006FDFB2CBD62F435DECECAA61ECB878B7DCA6A8A496F26785C47D`
+- candidate source: `2AA93B2AFE14FBAF7BF8FD47C50FFBCAF4F0F5B2A1EE5D26047DD6E08B427021`
+- target log: `B10ADD261BD2C9F5D430D8B60A05C32E53F4DCAA2783529F2DCD84C6B28E22F7`
+
+Control artifacts:
+`build-vita/devkit-logs/mvc2-state-neon-control/20260830-221516/`.
+
+- raw ELF: `273353FAD3B3D01BDE3DFEF9EED7631608EF930DA385E08B6BA148BC97F0FADA`
+- VELF: `EEA17C10508DF099769C838D6C1E0A1B38C29B8499B4E08D04B65247F20C5D20`
+- SELF: `32A5718E6F80A9752C34BC9E1C7C9C1B5ECEBE3194E0881B3A8BA34716B5E0B5`
+- target log: `1B522AD2DD4F4F9B5632DD5BCD35A5A176C9A854AF925181C73806CAE5CA849E`
+
 ## Next evidence gate
 
-1. Test a single source-level TA/JIT hypothesis against the NEON baseline,
-   with at least three repeats when the delta is small.
+1. Prioritize the SH4 vertex-transform/submission cluster at
+   `0x8C12FDB6..0x8C12FF9C` against the NEON baseline. Any HLE replacement must
+   first prove complete register/memory residue, dynamic cycle accounting and
+   revision-specific CRC, with a normal-JIT fallback on mismatch.
 2. Capture audio or perform a supervised listening pass before claiming that
    game-speed improvement preserves pacing.
 3. Exercise additional heavy matches/stages; this one savestate is not a
