@@ -13,6 +13,7 @@
 #include "profiler/profiler.h"
 #include "hw/sh4/dyna/blockmanager.h"
 #include "hw/arm7/arm7.h"
+#include "hw/pvr/ta_ctx.h"
 
 #include <ctime>
 
@@ -175,7 +176,7 @@ template void WriteMem_aica_reg<>(u32 addr, u32 data);
 static int DreamcastSecond(int tag, int c, int j)
 {
 	RealTimeClock++;
-	NOTICE_LOG(AICA, "emu-second: rtc=%u", RealTimeClock);
+	NOTICE_LOG(AICA, "emu-second: rtc=%u guest-renders=%u", RealTimeClock, ta_getGuestRenderCount());
 
 	prof_periodical();
 

@@ -8,6 +8,12 @@ extern u32 fskip;
 extern u32 FrameCount;
 static int RenderCount;
 
+u32 ta_getGuestRenderCount()
+{
+	// Updated by QueueRender on the emulation thread, before host frame skips.
+	return RenderCount;
+}
+
 TA_context* ta_ctx;
 tad_context ta_tad;
 

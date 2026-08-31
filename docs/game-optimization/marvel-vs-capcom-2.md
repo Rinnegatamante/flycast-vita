@@ -555,6 +555,131 @@ ta_vtx_data32 4.00%, AICA_Sample32 2.50%. These are waypoint-based function
 rankings in a later portion of the same match, not instruction timing or
 another estimate of the speedup. The launch used a 120-second fixed window.
 
+## Rejected follow-up: direct allocated-D-register memory operations
+
+After the retained FPU transfer change, a candidate sent VLDR/VSTR directly
+to an already aligned contiguous pair in d8..d15. Other pairs retained the
+accepted d0 bridge. Full-MMU and non-nvmem paths were unchanged. The same
+983,040-case device test was expanded to include both memory paths and passed.
+One diagnostic-free A/B pair measured off 0.867068 versus on 0.862394. There
+is no demonstrated benefit; reject and restore the accepted emitter. This
+single pair is not a precise estimate of the regression size.
+
+Evidence/source: `build-vita/devkit-logs/mvc2-fpu-memory-ab/20260831-111435/`.
+Raw ELF: `0929B5C5113C74F47E7B9F0BA12F94C43C1FB269D8B6EFB22B47A74EC75B6F29`.
+Device test: `build-vita/devkit-logs/mvc2-fpu-memory-test/20260831-111254/`.
+Both fixed-window A/B exits were expected ProcessKilled.
+
+## SH4 downclock pacing probe (2026-08-31)
+
+Added a per-emulated-second snapshot of guest render submissions, before host
+frameskipping. This counter is read and updated on the emulation thread; it
+does not race the render thread's separate completed-frame counter. It checks
+game cadence, not presented FPS or audio continuity. Each probe cold-starts
+slot 6 and measures the same RTC interval 1988906533..1988906549.
+
+| SH4 cycle factor | Guest/wall ratio | Guest render submissions / 16 seconds |
+| --- | ---: | ---: |
+| 1.00 | 0.867961 | 959 |
+| 1.25 | 0.884662 | 959 |
+| 1.50 | 0.912305 | 958 |
+| 1.75 | 0.942008 | 913 |
+| 2.00 | 0.952438 | 899 |
+
+All variants keep the accepted division and FPU-pair changes. Factors above
+1.00 explicitly disable cache-loop HLE because its batching contract accepts
+only the original four-cycle block; this is therefore a coupled configuration
+probe, not an isolated measurement of the clock parameter. Each has one run.
+All XML outcomes are expected fixed-window ProcessKilled. Target configuration
+is restored afterwards; no savestate or physical Vita clock is changed.
+
+Reject factors 1.75 and 2.00: the apparent speed increase includes a material
+drop in game animation/render cadence. Factors 1.25 and 1.50 remain unaccepted
+pending longer gameplay, input and audio checks. The one-frame difference at
+1.50 alone is not sufficient to distinguish phase offset from slowdown.
+Continue code optimization against the unchanged 1.00 factor.
+
+Evidence: `build-vita/devkit-logs/mvc2-downclock-pacing/20260831-112015/` and
+`build-vita/devkit-logs/mvc2-downclock-limit/20260831-112839/`; the corresponding
+per-launch sibling directories contain XML logs and screenshots.
+Both sets use ELF `AC80157C6EEF7A67319BB1C88ACA2E4475263E5E25D5C5271810C9BE2E267701`
+and SELF `DDA4F2DB42249FB5A99647771AE3FE49FE549803E0912409269909F9D52246D2`.
+The adjacent SFO still has ATTRIBUTE2=12 and its original hash.
+
+## Retained iteration: scheduler-bounded RAM-to-VRAM copy HLE
+
+The aligned copy hot block at 8C17A6F0 (ten bytes, CRC32 538D50CB) has five
+guest cycles. The initial RAM-to-RAM hypothesis was falsified on-device: its
+guard never entered the fast path because the observed destination is VRAM.
+That unsuccessful diagnostic is preserved at
+`build-vita/devkit-logs/mvc2-copy-hle-shadow/20260831-113519/`, including source.
+Its extra RAM-page bookkeeping is removed from the active source.
+
+The corrected handler batches aligned RAM-to-linear-64-bit-VRAM transfers,
+bounded by both physical pages and the original scheduler debit. Ordered
+eight-byte loads/stores retain the final raw DR0 value, R4/R5/R6, SR.T and PC.
+It uses the lockable VRAM mapping; the unchanged native-fault path still
+invalidates texture locks. 32-bit-swizzled VRAM, MMU, STRICT_MODE, GGPO and
+other destinations remain outside the fast path. No PREF operation is elided.
+See the separate function-contract notes for address and callback details.
+
+Host differential/scheduler tests pass 383,280 cases, including overlap,
+counter zero/wrap and successive scheduler residues. Device validation passes
+16,384 batches, comparing all registers/FPU bits, flags, PC, cycles and output
+against original handlers. Diagnostic native writes go to private memory;
+the real VRAM writes occur exactly once, via the original handlers.
+Evidence: `build-vita/devkit-logs/mvc2-copy-vram-shadow-reboot/20260831-114315/`.
+The diagnostic screenshot is coherent and its cadence is 959 frames / 16
+guest seconds. Division and cache shadow checks also pass again.
+
+An earlier launch failed in the target loader with `Invalid system file`
+before guest execution and left empty XML. Following the user's instruction
+after a power dip, the exact DevKit was rebooted. The identical SELF hash
+then launched successfully. This is not evidence of a patch-induced crash.
+The loop script now handles empty XML and reports the loader error clearly.
+
+Three diagnostic-free cold-start pairs, same binary/config except
+`Mvc2CopyLoopHle` (default off), no SH4 downclock, accepted FPU/cache/division
+changes enabled throughout:
+
+| Copy HLE | Guest/wall ratios | Mean | Population SD |
+| --- | --- | ---: | ---: |
+| Off | 0.876424, 0.875657, 0.875465 | 0.875849 | 0.000414 |
+| On | 0.881640, 0.882175, 0.882418 | 0.882077 | 0.000325 |
+
+Retain: +0.711% throughput. All six runs submit exactly 959 guest frames in
+the reference interval; all exits are expected fixed-window ProcessKilled.
+No full-speed or audio-continuity claim is made. Original target configuration
+is restored after each experiment, with the user's savestate unchanged.
+
+Evidence/source snapshots: `build-vita/devkit-logs/mvc2-copy-vram-ab/20260831-114508/`.
+
+- ELF: `926DC03C1818D9E0E6ADDF316C057CEC668E053525C1FCABE40726E7CE330934`
+- VELF: `3622000B71992D12305F9D655C89E0F1DAAAD1DDD8D182C001D9D131FC407769`
+- SELF: `3E8469F8A9818C72833583C42B9B93BB30B749168C379911DF728F9390E573E7`
+- Adjacent SFO retains ATTRIBUTE2=12 and its original hash.
+
+The prior accepted FPU profile's scheduler bars show the emulation `pthread`
+running for 98.66% of a core-equivalent, versus 72.41% for the rendering/main
+thread. The former migrated cores 747 times across 1,043 running intervals.
+These ratios use the same capture timestamp units; clock metadata is not
+used to infer actual MHz. `scripts/analyze-occam-threads.ps1` reproduces this
+analysis. This supports prioritizing emulation-thread work, but does not
+prove that changing affinity would help; the earlier core-2-only probe lost.
+
+Post-change PC sample: `build-vita/devkit-logs/occam/mvc2-copy-vram-pc/`,
+matching the A/B ELF, 5,066,234 application-range samples. SH4_TCB remains
+38.67%, TA polygon parsing 10.63%, make_index 7.06%, ARM7 5.03%, pal4 texture
+conversion 4.72%, and AICA_Sample32 2.30%. Copy entry/native body are 0.39% /
+0.23%; the fallback FMOV read/write handlers are 0.11% / 0.07%. These are
+waypoint rankings, not instruction-level measurements. The remaining copy
+fallback is lower priority than the dominant emulation work.
+RZR SHA-256: `524785C29EE6B51033307E77E6D75DC6D784C04FA8C078AB04CFC72525779139`.
+The 120-second launch completes normally; its first-interval wall ratio is
+perturbed by profiling and is not used as an A/B performance measurement.
+Scheduler bars again show the emulation pthread at 98.61% of a core-equivalent
+with 754 migrations, versus 68.82% for the rendering/main thread.
+
 ## Next evidence gate
 
 1. Use the post-division profile for the next candidate. The vertex cluster

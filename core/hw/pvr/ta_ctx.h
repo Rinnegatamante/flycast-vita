@@ -31,6 +31,8 @@ struct Vertex
 	float nx,ny,nz;
 };
 
+u32 ta_getGuestRenderCount();
+
 struct PolyParam
 {
 	u32 first;		//entry index , holds vertex/pos data

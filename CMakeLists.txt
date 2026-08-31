@@ -957,6 +957,7 @@ target_sources(${PROJECT_NAME} PRIVATE
 		core/hw/sh4/dyna/hle_patch.h
 		core/hw/sh4/hle/mvc2_us_division_1001.cpp
 		core/hw/sh4/hle/mvc2_us_cache_loop_1001.cpp
+		core/hw/sh4/hle/mvc2_us_copy_loop_1001.cpp
 		core/hw/sh4/dyna/ngen.h
 		core/hw/sh4/dyna/shil_canonical.h
 		core/hw/sh4/dyna/shil.cpp

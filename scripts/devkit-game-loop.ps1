@@ -190,7 +190,9 @@ try {
 
         $reason = 'unknown'
         if (Test-Path -LiteralPath $xmlLog) {
-            $rawXml = Get-Content -LiteralPath $xmlLog -Raw -ErrorAction SilentlyContinue
+            # Failed target loads can leave an empty XML file. Keep the loader
+            # error visible instead of replacing it with a null regex error.
+            $rawXml = [string](Get-Content -LiteralPath $xmlLog -Raw -ErrorAction SilentlyContinue)
             $matches = [regex]::Matches(
                 $rawXml,
                 'ProcessExit|ProcessKilled|StopNotification|AbortString|TargetError|Timeout')
@@ -201,6 +203,12 @@ try {
         Write-Host ("[$RunName] Completed: psp2run={0}, reason={1}, input={2}, marker={3}, window={4}" -f `
                 $run.ExitCode, $reason, $inputStarted, $completionObserved, $fixedWindowComplete)
         Write-Host "[$RunName] Artifacts: $runDir"
+        if (Test-Path -LiteralPath $errorLog) {
+            $loaderError = [string](Get-Content -LiteralPath $errorLog -Raw)
+            if ($loaderError -match 'Failed to load|Invalid system file') {
+                throw "DevKit load failed; inspect $errorLog"
+            }
+        }
     }
 } finally {
     & $script:psp2ctrl disconnect $Target | Out-Null

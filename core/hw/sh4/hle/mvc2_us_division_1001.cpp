@@ -9,6 +9,8 @@
 
 void mvc2CacheLoopEntry(s32 remainingCycles);
 bool mvc2CacheLoopEligible();
+void mvc2CopyLoopEntry(s32 remainingCycles);
+bool mvc2CopyLoopEligible();
 
 namespace {
 
@@ -135,8 +137,9 @@ void divideEntry(s32 /*remainingCycles*/)
 HlePatch patches[] = {
 	{0x8C1291E2, 140, 0x5598C45C, &divideEntry, -1, &eligible},
 	{0x8C02DEC6, 8, 0x9139F3E8, &mvc2CacheLoopEntry, -1, &mvc2CacheLoopEligible},
+	{0x8C17A6F0, 10, 0x538D50CB, &mvc2CopyLoopEntry, -1, &mvc2CopyLoopEligible},
 };
-HlePatchSet patchSet = {"T1212N", "MVC2 US v1.001", patches, 2};
+HlePatchSet patchSet = {"T1212N", "MVC2 US v1.001", patches, 3};
 HLE_REGISTER_PATCH_SET(patchSet);
 
 } // namespace

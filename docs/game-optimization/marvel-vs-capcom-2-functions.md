@@ -87,3 +87,34 @@ Whole-function HLE is not yet implemented. Preserve intermediate scheduler
 checks, FPU rounding/flags, PR/FPUL, the full register residue, and the exact
 order of both PREF submissions. Existing failed single-block vertex HLE is
 not evidence that a broader, carefully bounded optimization cannot work.
+
+## Aligned copy family: 8C17A6E0..8C17A734
+
+IDA did not assign a function boundary to the hot label automatically. The
+surrounding disassembly shows an alignment dispatch on R4|R5|R6: eight-byte
+copy uses FSCHG and divides the byte count by eight; fallback loops use four,
+two or one-byte transfers. The hot five-instruction loop at 8C17A6F0 has ten
+bytes and CRC32 `538D50CB`, matching the executable extracted from the disc.
+
+With FPSCR.SZ=1, each iteration reads eight bytes at R5 into raw DR0, advances
+R5 by eight, decrements R6 and updates SR.T, writes DR0 at R4, then advances
+R4 by eight in the BF/S delay slot. Next PC is 8C17A6FA when R6 becomes zero,
+otherwise 8C17A6F0. An initial zero count wraps; it does not skip the loop.
+The profiled JIT block costs five guest cycles. Preserve the final raw DR0
+bits, all untouched state, read-before-write order and scheduler boundaries.
+
+The first device probe found destination A4445408, source 0CE60008, count 63,
+SZ=1: the workload is RAM-to-VRAM, not the initially hypothesized RAM-to-RAM
+copy. A RAM-only guard never entered its fast path during that probe, so no
+device shadow-validation success is claimed for that initial variant.
+
+The corrected candidate targets only the linear 64-bit VRAM interfaces at
+physical 04/06; 05/07's 32-bit interface has different address mapping and is
+excluded. It writes through the original lockable `vram` mapping. The Vita
+abort handler handles VramLockedWrite before testing whether the faulting PC
+is JIT code, so native C++ stores retain texture invalidation and page unlock
+callbacks. No manual pre-unlock or writable bypass alias is used. Batches
+stay within both physical pages and stop before the next scheduler debit.
+MMU, STRICT_MODE and GGPO are excluded. Diagnostic comparison computes native
+output privately and performs original VRAM writes exactly once, avoiding
+extra texture callbacks from replaying both versions into visible memory.
