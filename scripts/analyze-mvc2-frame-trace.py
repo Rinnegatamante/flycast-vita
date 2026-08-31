@@ -8,7 +8,8 @@ from bisect import bisect_left
 from pathlib import Path
 
 KINDS = ("compile", "cache_clear", "temp_clear", "ram_invalidate", "queue_wait",
-         "render_wait", "process", "draw", "present", "texture")
+         "render_wait", "process", "draw", "present", "texture",
+         "decode", "analyse", "reg_alloc", "emit")
 
 
 def union_us(events, lo, hi):

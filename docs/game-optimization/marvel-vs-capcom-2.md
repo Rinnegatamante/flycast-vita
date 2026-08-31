@@ -843,6 +843,147 @@ Evidence: `build-vita/devkit-logs/mvc2-frame-trace-disabled-smoke/20260831-16130
 Normal ELF: `DCCF62A66D0FCECA45EFBDD045F779DCDC5679215014C10F8B0E6A678AA06C31`;
 normal SELF: `DB460CA0BA5567FBD67D4655BEBF8B96A153AE5149E249678A1B2C4D0080CC01`.
 
+## 2026-08-31: compiler phases and rejected asynchronous backend
+
+The asynchronous experiment is rejected, not a retained optimization. Its
+source is archived in Git history and beside the exact experimental ELF;
+the following cleanup removes its runtime code, extra arena and compiler
+context indirection. Only compiler-phase diagnostics and the failed-launch
+guard are retained. No persistent native cache or prewarming is implemented
+by this experiment.
+
+### Where compilation stalls
+
+Same disc, slot 6, fixed RTC 1988906533--1988906549 and accepted copy-HLE
+configuration. Additional trace scopes separate decode, SSA analysis,
+register-allocation setup and emission. `reg_alloc` measures `DoAlloc` only:
+allocation also occurs during emission. These remain wall-time scopes,
+including scheduling/preemption, not exclusive CPU measurements.
+
+Phase-only baseline: 18.345 wall seconds / 16 guest seconds (0.872172),
+6,863 compiler entries in the 30-second trace. Total compile wall time is
+1,407.461 ms: decode 316.831, analysis 292.491, allocation setup 26.505,
+emission/finalization 527.953 ms. The remainder includes setup, registration
+and other compiler work. At guest-submission interval 531:
+
+| Scope | Wall ms |
+| --- | ---: |
+| Complete interval | 125.956 |
+| Compilation | 99.750 |
+| Decode | 22.523 |
+| Analysis | 21.267 |
+| Allocation setup | 1.822 |
+| Emission/finalization | 38.407 |
+
+Moving only the backend cannot remove the roughly 44 ms of decode/analysis
+in that interval. Evidence:
+`build-vita/devkit-logs/mvc2-compile-phases/20260831-163248/`.
+ELF SHA-256:
+`576A37EBFF789E0F623D17A53D900E30B7DF1D5E50F0645EBB398996FF68AC45`.
+
+### Bounded prototype and measured results
+
+The foreground decodes/analyzes an immutable IR snapshot. A worker emits
+eligible integer blocks into a separate 2 MiB arena using isolated assembler,
+allocator and call-parameter state. Until ready, a temporary entry interprets
+the same optimized IR and charges the block's guest cycles. Publication,
+links and block-manager changes occur only on the emulation thread, with
+invalidation checks and instruction-cache maintenance. FPU, HLE, interrupt,
+MMU, temporary and unprotected blocks stay synchronous. This is a restricted
+prototype, not a general SH4 interpreter fallback.
+
+On-device differential checks passed 89,088 arithmetic/register-context
+cases, including boundary/random inputs and register aliases. They do not
+establish memory-callback, interrupt, cache-reset or whole-game correctness.
+An additional audit found that worker restart during code-cache/mainloop
+recreation needs an explicit gate before further use. No cache clear occurred
+in these captures, so this untested lifecycle case does not explain the
+observed regression. The source is not shipping-ready.
+
+| Variant / pair | Async off wall s | Async on wall s | Result |
+| --- | ---: | ---: | --- |
+| Initial isolated backend, validation enabled | -- | 19.029 | Slower than phase-only baseline |
+| Explicit compiler contexts, pair 1 | 18.395 | 19.161 | Regression |
+| Explicit compiler contexts, pair 2 | 18.441 | 19.117 | Regression |
+| Shared fallback/scheduler entry | 18.435 | 19.215 | Regression |
+
+All rows use 16 guest seconds; no CPU/guest clocks or renderer settings
+changed. The repeated pairs regress about 3.77% in guest/wall speed; the shared
+entry regresses about 4.06%. The latter improves interval 531 slightly against
+its same-binary disabled control (138.233 to 134.079 ms), but does not eliminate
+the hitch and remains above the phase-only 125.956 ms baseline. Compiler-state
+isolation itself also raises synchronous backend cost, so runtime-off is not
+equivalent to the pre-prototype executable.
+
+The final shared-entry run submits 5,654 jobs, all ready at export, with 5,414
+published and zero rejected by the report point. Median queue wait is 44 us;
+6,724 interpreted entries mean most pending blocks execute only once before
+native publication. This is not an interpreter runaway. Decode/analysis at
+interval 531 increases from roughly 44 ms in the phase-only baseline to
+roughly 62 ms with the worker. Scheduling, allocator and cache contention are
+possible explanations, not separately established causes. Job wall times on
+the worker overlap foreground scopes and must not be added to them.
+
+Evidence, including raw trace/job CSVs, analyzed intervals, ELF, SELF, SFO,
+config, complete appended logs and current-launch origin verification:
+
+- Initial successful 2 MiB worker and validation:
+  `build-vita/devkit-logs/mvc2-async-validate-small/20260831-164927/`.
+  ELF `F4A64A82C0C31172E52B4607965C78CA85CDFA73EDB2F34F47579AD3FD912A30`.
+- Repeated on/off pairs and source snapshot:
+  `build-vita/devkit-logs/mvc2-async-ab/20260831-165444/`.
+  ELF `F90B080FD2599604D0B7E95BBD1D7DD02446E070DD960CA6492D7F0E438A09C5`.
+- Shared entry, repeat validation and source snapshot:
+  `build-vita/devkit-logs/mvc2-async-shared-stub/20260831-170403/`.
+  ELF `44DE5AC7A1E6B196BB877FE8CD71E1202A51BF99865F091AA22245E2F377ABF9`;
+  SELF `E89131B6C041D60CA40DDA1A77AE3802AB7F0E0365B7EDF1F142EC16B6D10A75`.
+- `scripts/analyze-mvc2-async-jobs.py` checks job counts and timestamps and
+  reports queue, worker and publication latency; it remains an offline tool
+  for the archived experiment.
+
+Successful runs end by fixed-window ProcessKilled, with zero trace overflow
+or wrong-lane writes. Inspected screenshots show coherent combat; audio was
+not captured/listened to. Config is restored after each run and the original
+state is never saved over. ATTRIBUTE2 remains 12 in the adjacent SFO.
+
+The first attempt with a 10 MiB extra arena failed before content startup:
+physical-page commitment for `Sh4RCB` failed in `vita_vmem.cpp:71` while
+requesting a 16 MiB chunk. This is not evidence of a bad SELF or voltage fault.
+Reducing the additional arena to 2 MiB allowed launch. Evidence:
+`build-vita/devkit-logs/mvc2-async-validate/20260831-164554/` and launch XML under
+`mvc2-async-validate-1-async/20260831-164607/`. Data pulled after that failed
+launch was stale and is excluded. The launch helper now throws on a target
+stop/abort/error before the observation completes, preventing the measurement
+helper from accepting old files as results. No reboot was needed.
+
+### Cache alternative: feasible, not yet implemented
+
+The existing in-memory block cache already reuses compiled addresses. The
+trace's 516 first-use PCs in interval 531 show why it cannot prevent that
+burst. A persistent cache of emitted ARM could avoid re-emission across
+launches, but a byte dump alone is unsafe:
+
+- ARM `DynaRBI::Relocate` is currently empty. `call`/`jump` emit relative
+  branches or absolute addresses to runtime helpers and other blocks.
+- Constant memory operations can embed pointers from `_vmem_read_const` and
+  `_vmem_write_const`. Guest code and SSA-folded literals must still match.
+- Block-manager metadata, protection/invalidation bookkeeping, FPSCR,
+  branch/relink information and code/config/build identity must be restored
+  or reconstructed. Save states contain guest state, not this native cache.
+- Reuse requires relocation records, or a strict rejection guard whenever
+  any required host layout/address differs. Do not assume identical host
+  addresses across launches or builds. The existing block `hash()` is not
+  a sufficient byte-and-literal identity check for this purpose.
+
+A smaller first experiment would record a learned manifest of guest PCs,
+FPSCR and code/literal fingerprints, then validate and compile matching blocks
+after loading the state but before starting emulation. This still emits ARM
+at load time; it is prewarming, NOT a persistent native-code cache. It must
+not execute the game, advance guest time, or change architectural state.
+Changed/streamed pages and unknown moves must fall back to ordinary JIT.
+Coverage, extra load time and stutter improvement remain to be measured.
+Existing PC-only trace/profile lists are insufficient without these guards.
+
 ## Next evidence gate
 
 1. Use the post-division profile for the next candidate. The vertex cluster

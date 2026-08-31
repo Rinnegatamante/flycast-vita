@@ -46,6 +46,12 @@
 
 #define CODE_SIZE   (10*1024*1024)
 #define TEMP_CODE_SIZE (1024*1024)
+#if defined(__vita__) && HOST_CPU == CPU_ARM && FEAT_SHREC == DYNAREC_JIT
+#define MVC2_ASYNC_CODE_SIZE (2*1024*1024)
+#else
+#define MVC2_ASYNC_CODE_SIZE 0
+#endif
+#define TOTAL_CODE_SIZE (CODE_SIZE + TEMP_CODE_SIZE + MVC2_ASYNC_CODE_SIZE)
 
 // When NO_RWX is enabled there's two address-spaces, one executable and
 // one writtable. The emitter and most of the code in rec-* will work with

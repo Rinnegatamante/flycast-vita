@@ -15,6 +15,7 @@
 
 #include "blockmanager.h"
 #include "ngen.h"
+#include "mvc2_async.h"
 #include "decoder.h"
 
 #include <xxhash.h>
@@ -23,7 +24,7 @@
 #if defined(_WIN32) || FEAT_SHREC != DYNAREC_JIT || defined(TARGET_IPHONE) || defined(TARGET_ARM_MAC)
 static u8 *SH4_TCB;
 #else
-static u8 SH4_TCB[CODE_SIZE + TEMP_CODE_SIZE + 4096]
+static u8 SH4_TCB[TOTAL_CODE_SIZE + 4096]
 #if defined(__unix__) || defined(__SWITCH__) || defined(__vita__)
 	__attribute__((section(".text")));
 #elif defined(__APPLE__)
@@ -46,7 +47,10 @@ static std::unordered_set<u32> smc_hotspots;
 
 static sh4_if sh4Interp;
 
-void* emit_GetCCPtr() { return emit_ptr==0?(void*)&CodeCache[LastAddr]:(void*)emit_ptr; }
+void* emit_GetCCPtr() {
+	if (mvc2AsyncWorker()) return mvc2AsyncEmitPtr();
+	return emit_ptr==0?(void*)&CodeCache[LastAddr]:(void*)emit_ptr;
+}
 
 static void clear_temp_cache(bool full)
 {
@@ -58,6 +62,7 @@ static void clear_temp_cache(bool full)
 
 static void recSh4_ClearCache()
 {
+	mvc2AsyncStop(true);
 	FT_SCOPE(Emu, CacheClear, next_pc);
 	INFO_LOG(DYNAREC, "recSh4:Dynarec Cache clear at %08X free space %d", next_pc, emit_FreeSpace());
 	LastAddr = 0;
@@ -75,12 +80,14 @@ static void recSh4_Run()
 	INFO_LOG(DYNAREC, "cntx // fpcb offset: %td // pc offset: %td // pc %08X", (u8*)&sh4rcb.fpcb - sh4_dyna_rcb, (u8*)&sh4rcb.cntx.pc - sh4_dyna_rcb, sh4rcb.cntx.pc);
 	
 	ngen_mainloop(sh4_dyna_rcb);
+	mvc2AsyncStop(false);
 
 	sh4_int_bCpuRun = false;
 }
 
 void emit_Skip(u32 sz)
 {
+	if (mvc2AsyncWorker()) { mvc2AsyncEmitSkip(sz); return; }
 	if (emit_ptr)
 		emit_ptr = (u32*)((u8*)emit_ptr + sz);
 	else
@@ -89,6 +96,7 @@ void emit_Skip(u32 sz)
 }
 u32 emit_FreeSpace()
 {
+	if (mvc2AsyncWorker()) return mvc2AsyncEmitFree();
 	if (emit_ptr)
 		return (emit_ptr_limit - emit_ptr) * sizeof(u32);
 	else
@@ -156,6 +164,7 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
 	oplist.clear();
 
 	try {
+		FT_SCOPE(Emu, Decode, rpc);
 		if (!dec_DecodeBlock(this, SH4_TIMESLICE / 2))
 			return false;
 	}
@@ -165,7 +174,10 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
 	}
 	SetProtectedFlags();
 
-	AnalyseBlock(this);
+	{
+		FT_SCOPE(Emu, Analyse, rpc);
+		AnalyseBlock(this);
+	}
 
 	return true;
 }
@@ -199,10 +211,12 @@ DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
 	bool do_opts = !rbi->temp_block;
 	rbi->staging_runs=do_opts?100:-100;
 	bool block_check = !rbi->read_only;
-	ngen_Compile(rbi, block_check, (pc & 0xFFFFFF) == 0x08300 || (pc & 0xFFFFFF) == 0x10000, false, do_opts);
+	if (!mvc2AsyncCompile(rbi))
+		ngen_Compile(rbi, block_check, (pc & 0xFFFFFF) == 0x08300 || (pc & 0xFFFFFF) == 0x10000, false, do_opts);
 	verify(rbi->code!=0);
 
 	bm_AddBlock(rbi);
+	mvc2AsyncBind(rbi);
 
 	if (emit_ptr != NULL)
 	{
@@ -406,9 +420,9 @@ static void recSh4_Init()
 	// Call the platform-specific magic to make the pages RWX
 	CodeCache = NULL;
 	#if defined(FEAT_NO_RWX_PAGES)
-	verify(vmem_platform_prepare_jit_block(candidate_ptr, CODE_SIZE + TEMP_CODE_SIZE, (void**)&CodeCache, &cc_rx_offset));
+	verify(vmem_platform_prepare_jit_block(candidate_ptr, TOTAL_CODE_SIZE, (void**)&CodeCache, &cc_rx_offset));
 	#else
-	verify(vmem_platform_prepare_jit_block(candidate_ptr, CODE_SIZE + TEMP_CODE_SIZE, (void**)&CodeCache));
+	verify(vmem_platform_prepare_jit_block(candidate_ptr, TOTAL_CODE_SIZE, (void**)&CodeCache));
 	#endif
 	// Ensure the pointer returned is non-null
 	verify(CodeCache != NULL);
@@ -420,6 +434,7 @@ static void recSh4_Init()
 
 static void recSh4_Term()
 {
+	mvc2AsyncStop(true);
 	INFO_LOG(DYNAREC, "recSh4 Term");
 	bm_Term();
 	sh4Interp.Term();

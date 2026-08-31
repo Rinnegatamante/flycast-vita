@@ -203,6 +203,9 @@ try {
         Write-Host ("[$RunName] Completed: psp2run={0}, reason={1}, input={2}, marker={3}, window={4}" -f `
                 $run.ExitCode, $reason, $inputStarted, $completionObserved, $fixedWindowComplete)
         Write-Host "[$RunName] Artifacts: $runDir"
+        if ($reason -in @('StopNotification', 'AbortString', 'TargetError') -and -not $fixedWindowComplete) {
+            throw "Target stopped before the observation completed ($reason); inspect $xmlLog"
+        }
         if (Test-Path -LiteralPath $errorLog) {
             $loaderError = [string](Get-Content -LiteralPath $errorLog -Raw)
             if ($loaderError -match 'Failed to load|Invalid system file') {

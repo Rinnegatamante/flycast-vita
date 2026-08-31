@@ -3,6 +3,7 @@
 #include "cfg/cfg.h"
 #include "cfg/option.h"
 #include "stdclass.h"
+#include "hw/sh4/dyna/mvc2_async.h"
 #include <psp2/kernel/processmgr.h>
 #include <atomic>
 #include <algorithm>
@@ -27,7 +28,8 @@ static __thread int currentLane = -1;
 static std::atomic<uint32_t> wrongLane{0};
 static const char* names[] = { "compile", "cache_clear", "temp_clear", "block_check", "ram_invalidate",
     "guest_frame", "queue_result", "queue_wait", "render_wait", "render_begin",
-    "process", "draw", "present", "presented", "texture", "guest_second", "vblank" };
+    "process", "draw", "present", "presented", "texture", "guest_second", "vblank",
+    "decode", "analyse", "reg_alloc", "emit" };
 
 void init()
 {
@@ -102,6 +104,7 @@ void poll()
         return;
     active.store(false, std::memory_order_release);
     exported = true;
+    mvc2AsyncReport(origin);
     const uint32_t counts[] = {streams[Emu].published.load(std::memory_order_acquire),
                               streams[Render].published.load(std::memory_order_acquire)};
     const std::string path = get_writable_data_path("mvc2_frame_trace.csv");

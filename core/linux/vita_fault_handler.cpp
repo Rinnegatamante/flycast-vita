@@ -49,7 +49,7 @@ void abortHandler(KuKernelAbortContext *abortContext)
 	// fast mem access rewriting
 	host_context_t ctx;
 	context_from_segfault(&ctx, abortContext);
-	bool dyna_cde = ((unat)CC_RX2RW(ctx.pc) >= (unat)CodeCache) && ((unat)CC_RX2RW(ctx.pc) < (unat)(CodeCache + CODE_SIZE + TEMP_CODE_SIZE));
+	bool dyna_cde = ((unat)CC_RX2RW(ctx.pc) >= (unat)CodeCache) && ((unat)CC_RX2RW(ctx.pc) < (unat)(CodeCache + TOTAL_CODE_SIZE));
 
 	if (dyna_cde && ngen_Rewrite(ctx, (void *)abortContext->FAR))
 	{
