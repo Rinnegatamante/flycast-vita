@@ -680,6 +680,48 @@ perturbed by profiling and is not used as an A/B performance measurement.
 Scheduler bars again show the emulation pthread at 98.61% of a core-equivalent
 with 754 migrations, versus 68.82% for the rendering/main thread.
 
+## Rejected iteration: emulation-thread affinity on cores 0 and 1
+
+Following the scheduler evidence above, tested explicit single-core affinity
+after SDL audio thread creation, with automatic placement as the control.
+SDK documentation and installed headers were checked for the affinity API.
+No priority, physical clock or guest timing setting was changed. API calls
+succeeded and read-back masks were 00010000 (core 0), 00020000 (core 1); the
+control reported default 00000000. All three clock reads were 500 MHz.
+
+One same-executable cold-start probe per configuration:
+
+| Placement | Guest/wall ratio | Guest frames / 16 seconds |
+| --- | ---: | ---: |
+| Automatic | 0.885005 | 959 |
+| Core 0 | 0.874174 | 959 |
+| Core 1 | 0.858645 | 959 |
+
+Reject both, with no claim about precise regression size from one run. The
+affinity hook and headers are removed. All exits were normal fixed-window
+ProcessKilled. Original target config is restored. Evidence and source:
+`build-vita/devkit-logs/mvc2-affinity-cores01/20260831-115904/`.
+ELF: `9C752FE02A6B3E79ADDD3158BC65992E3EBAD78254BD42831F34DF5E4F3B9FD8`.
+SELF: `CD22A6E1D0AFB07AC737782276D8E775CF924845594C25F7CCADCB43986C2312`.
+
+## Open diagnostic: slowdown when taking a hit
+
+The user reports frame drops when the character is struck. That precise
+event has not yet been correlated with JIT misses or texture updates. The
+current code compiles missing blocks synchronously in rdv_FailedToFindBlock
+and rdv_CompilePC. The latest PC sample is dominated by execution of existing
+SH4 code; compiler-specific routines have very few samples, which does not
+rule out a short first-use spike outside the sampled hit sequence.
+
+A useful next diagnostic is per-frame compilation count/time, code-cache
+clears and texture-update time, while replaying the same hit repeatedly
+without restarting. No asynchronous compiler is implemented. The existing
+compiler reads live PC/FPSCR and guest memory, uses static decoder/emitter
+state, and publishes into shared block/cache structures. A background design
+would require isolated compilation state, coherent input snapshots, safe
+publication/invalidation and a correctly timed interpreter fallback. Merely
+calling the present compiler from another thread is not safe.
+
 ## Next evidence gate
 
 1. Use the post-division profile for the next candidate. The vertex cluster
