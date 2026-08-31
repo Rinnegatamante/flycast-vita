@@ -20,21 +20,19 @@ struct Scope {
     Kind kind;
     uint32_t arg;
     uint64_t start;
-    Scope(Lane l, Kind k, uint32_t a, bool enabled = true) : lane(l), kind(k), arg(a), start(enabled ? begin() : 0) {}
+    Scope(Lane l, Kind k, uint32_t a) : lane(l), kind(k), arg(a), start(begin()) {}
     ~Scope() { if (start) end(lane, kind, start, arg); }
 };
 }
 #define FT_JOIN_INNER(a, b) a##b
 #define FT_JOIN(a, b) FT_JOIN_INNER(a, b)
 #define FT_SCOPE(l, k, a) frame_trace::Scope FT_JOIN(ft_scope_, __LINE__)(frame_trace::l, frame_trace::k, a)
-#define FT_SCOPE_IF(l, k, a, c) frame_trace::Scope FT_JOIN(ft_scope_, __LINE__)(frame_trace::l, frame_trace::k, a, c)
 #define FT_MARK(l, k, a, d) frame_trace::mark(frame_trace::l, frame_trace::k, a, d)
 #define FT_INIT() frame_trace::init()
 #define FT_BIND_EMU() frame_trace::bindEmu()
 #define FT_POLL() frame_trace::poll()
 #else
 #define FT_SCOPE(l, k, a) do {} while (0)
-#define FT_SCOPE_IF(l, k, a, c) do {} while (0)
 #define FT_MARK(l, k, a, d) do {} while (0)
 #define FT_INIT() do {} while (0)
 #define FT_BIND_EMU() do {} while (0)

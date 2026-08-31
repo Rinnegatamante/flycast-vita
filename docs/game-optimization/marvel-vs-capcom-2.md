@@ -846,7 +846,7 @@ normal SELF: `DB460CA0BA5567FBD67D4655BEBF8B96A153AE5149E249678A1B2C4D0080CC01`.
 ## 2026-08-31: compiler phases and rejected asynchronous backend
 
 The asynchronous experiment is rejected, not a retained optimization. Its
-source is archived in Git history and beside the exact experimental ELF;
+source is archived in commit `b90dee023` and beside the exact experimental ELF;
 the following cleanup removes its runtime code, extra arena and compiler
 context indirection. Only compiler-phase diagnostics and the failed-launch
 guard are retained. No persistent native cache or prewarming is implemented
@@ -984,16 +984,51 @@ Changed/streamed pages and unknown moves must fall back to ordinary JIT.
 Coverage, extra load time and stutter improvement remain to be measured.
 Existing PC-only trace/profile lists are insufficient without these guards.
 
+### Accepted tree and normal-build verification
+
+The current tree removes the archived asynchronous backend completely,
+including the additional 2 MiB arena, temporary interpreter entries and
+thread-local compiler context indirection. Compiler-phase scopes remain
+behind the existing `VITA_FRAME_TRACE` build switch. Their analyzer now has
+explicit phase-boundary fixtures as well as the earlier overlap tests.
+
+Rebuilt with symbols on, LTO off, frame tracing off and JIT run profiling off.
+`nm` finds no trace collector or asynchronous-worker symbols. A host fixture
+with undeclared scope arguments compiles/runs when tracing is disabled;
+the analyzer tests and PowerShell parser check pass. The 45-second normal
+smoke run loads slot 6, advances the fixed 16 guest seconds in 18.304 wall
+seconds (0.874126), and ends by the planned ProcessKilled. Its screenshot
+shows coherent combat. This is a restoration smoke test, not a new speedup
+or an audio/full-speed validation.
+
+Evidence: `build-vita/devkit-logs/mvc2-async-rejected-smoke/20260831-172414/`;
+launch XML/screenshot: `mvc2-async-rejected-smoke-1-normal/20260831-172427/`.
+Normal ELF SHA-256:
+`AF97BA51ABB925C4FC4F361C64E276B010ABAC414E5FCB7CA362669F717517C0`;
+normal SELF:
+`8CD12D57FD5B4F8193AF93DB6CA17234A040C7A282C4B030539C5AB5FB502832`.
+Adjacent SFO still has ATTRIBUTE2=12 and SHA-256
+`0106D568E3DC48228DE1A4AF779D2B4DAD9FE5DA393170ED826037A44A4038F0`.
+Final target readback verifies unchanged configuration
+`69C99B54B98C4A1308C6E420C579FFEFDB1FCB086719D4800FA1F439CC0D3C60`
+and unchanged slot 6
+`10F53EDAAB5DD2E5F0CB70115F7164C2EC305FDE63F57DC21CAA8959E77A4DA5`.
+The target process is stopped after the test.
+
 ## Next evidence gate
 
-1. Use the post-division profile for the next candidate. The vertex cluster
+1. Prioritize first-use stutter. Test verified loading-time prewarming or a
+   native-code cache with relocation/identity checks against the same cold
+   slot-6 trace. Measure coverage and individual hitch durations, not only
+   average speed; do not confuse prewarming with native-code persistence.
+2. For sustained execution cost, retain the post-division profile. The vertex cluster
    still needs an algorithmic/vector or data-movement improvement; merely
    translating its small emission block to C++ lost performance. Any broader
    HLE region must retain intermediate scheduler/interrupt checks as well as
    complete register/memory residue and dynamic cycle accounting.
-2. Capture audio or perform a supervised listening pass before claiming that
+3. Capture audio or perform a supervised listening pass before claiming that
    game-speed improvement preserves pacing.
-3. Exercise additional heavy matches/stages; this one savestate is not a
+4. Exercise additional heavy matches/stages; this one savestate is not a
    whole-game correctness result.
-4. Re-profile every retained material change and perform final LTO-on versus
+5. Re-profile every retained material change and perform final LTO-on versus
    LTO-off A/B only after representative gameplay is full speed.

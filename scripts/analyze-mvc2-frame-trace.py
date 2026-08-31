@@ -137,11 +137,21 @@ def test():
                for i, s in enumerate((1_100_000, 1_120_000, 1_160_000))]
     fixture += [dict(lane="emu", kind="compile", start_us=1_119_000, end_us=1_123_000, arg=0, detail=0),
                 dict(lane="render", kind="texture", start_us=1_121_000, end_us=1_123_000, arg=0, detail=0)]
+    fixture += [dict(lane="emu", kind=kind, start_us=start, end_us=end, arg=0, detail=0)
+                for kind, start, end in (("decode", 1_119_000, 1_121_000),
+                                         ("analyse", 1_121_000, 1_121_500),
+                                         ("reg_alloc", 1_121_500, 1_121_750),
+                                         ("emit", 1_121_750, 1_123_000))]
     rows = interval_rows(fixture, "guest_frame", 3_000_000)
     assert [r["compile_ms"] for r in rows] == [1, 3]
     assert [r["compile_starts"] for r in rows] == [1, 0]
     assert rows[1]["texture_ms"] == 2
     assert rows[1]["wall_ms"] == 40
+    assert [r["decode_ms"] for r in rows] == [1, 1]
+    assert [r["decode_starts"] for r in rows] == [1, 0]
+    assert rows[1]["analyse_ms"] == .5
+    assert rows[1]["reg_alloc_ms"] == .25
+    assert rows[1]["emit_ms"] == 1.25
     assert len(interval_rows(fixture, "guest_frame", 2_140_000)) == 1
     print("frame trace analyzer: all boundary/overlap/attribution tests passed")
 

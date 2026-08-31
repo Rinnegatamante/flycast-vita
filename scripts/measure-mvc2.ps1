@@ -79,16 +79,6 @@ try {
                 if ((Get-Content -LiteralPath $tracePath -TotalCount 1) -notmatch ('origin_us=' + $traceStart.Groups[1].Value + '\b')) {
                     throw 'Stale trace: origin does not match this launch'
                 }
-                if ((Get-Content -LiteralPath $readback -Raw) -match '(?m)^Mvc2AsyncJit\s*=\s*yes\s*$') {
-                    if ($lastRun -notmatch 'mvc2-async: report .*io_error=0') { throw 'Async job report missing' }
-                    $jobsPath = Join-Path $evidence "$label-async-jobs.csv"
-                    Connect-Devkit
-                    try { Copy-Devkit 'ux0:data/flycast/data/mvc2_async_jobs.csv' $jobsPath }
-                    finally { & $ctrl disconnect $Target | Out-Null }
-                    if ((Get-Content -LiteralPath $jobsPath -TotalCount 1) -notmatch ('origin_us=' + $traceStart.Groups[1].Value + '\b')) {
-                        throw 'Stale async job report'
-                    }
-                }
             }
             $markers = @([regex]::Matches($lastRun, '(?m)^(\d\d):(\d\d):(\d\d\d).*emu-second: rtc=(\d+)'))
             if ($markers.Count -lt 17 -or [long]$markers[0].Groups[4].Value -ne 1988906533 -or [long]$markers[16].Groups[4].Value -ne 1988906549) { throw 'Guest interval mismatch' }
