@@ -35,6 +35,7 @@ using namespace vixl::aarch32;
 #include "hw/sh4/dyna/hle_patch.h"
 #include "hw/sh4/sh4_mem.h"
 #include "cfg/option.h"
+#include "cfg/cfg.h"
 
 //#define CANONICALTEST
 
@@ -102,6 +103,9 @@ public:
 };
 
 static Arm32Assembler ass;
+
+#include "mvc2_fpu_pair.h"
+static bool mvc2DirectFpuPairs;
 
 static void loadSh4Reg(Register Rt, u32 Sh4_Reg)
 {
@@ -1179,12 +1183,9 @@ static void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool o
 						ass.Vldr(d0, MemOperand(r1));
 						if (reg.IsAllocf(op->rd))
 						{
-							ass.Vmov(r0, r1, d0);
-							ass.Vmov(reg.mapFReg(op->rd, 0), r0);
-							ass.Vmov(reg.mapFReg(op->rd, 1), r1);
-							// easier to do just this but we need to use a different op than 32f to distinguish during rewrite
-							//ass.Vldr(reg.mapFReg(op->rd, 0), MemOperand(r1));
-							//ass.Vldr(reg.mapFReg(op->rd, 1), MemOperand(r1, 4));
+							// Keep VLDR d0: the fault rewriter distinguishes 64-bit accesses
+							// by that opcode. Only the trailing register transfer changes.
+							mvc2ReadFpuPair(ass, reg.mapFReg(op->rd, 0), reg.mapFReg(op->rd, 1), mvc2DirectFpuPairs);
 						}
 						else
 						{
@@ -1215,9 +1216,7 @@ static void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool o
 						vmem_slowpath(raddr, r0, s0, d0, optp, true);
 						if (reg.IsAllocf(op->rd))
 						{
-							ass.Vmov(r0, r1, d0);
-							ass.Vmov(reg.mapFReg(op->rd, 0), r0);
-							ass.Vmov(reg.mapFReg(op->rd, 1), r1);
+							mvc2ReadFpuPair(ass, reg.mapFReg(op->rd, 0), reg.mapFReg(op->rd, 1), mvc2DirectFpuPairs);
 						}
 						else
 						{
@@ -1244,9 +1243,7 @@ static void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool o
 				{
 					if (reg.IsAllocf(op->rs2))
 					{
-						ass.Vmov(r2, reg.mapFReg(op->rs2, 0));
-						ass.Vmov(r3, reg.mapFReg(op->rs2, 1));
-						ass.Vmov(d0, r2, r3);
+						mvc2WriteFpuPair(ass, reg.mapFReg(op->rs2, 0), reg.mapFReg(op->rs2, 1), mvc2DirectFpuPairs);
 					}
 					else
 					{
@@ -2034,6 +2031,13 @@ static void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool o
 
 void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool staging, bool optimise)
 {
+	mvc2DirectFpuPairs = settings.content.gameId == "T1212N" && cfgLoadBool("perf", "Mvc2DirectFpuPairs", false);
+	static bool pairsTested;
+	if (mvc2DirectFpuPairs && !pairsTested && cfgLoadBool("perf", "Mvc2FpuPairValidate", false))
+	{
+		pairsTested = true;
+		mvc2TestFpuPairs();
+	}
 	ass = Arm32Assembler((u8 *)emit_GetCCPtr(), emit_FreeSpace());
 
 	block->code = (DynarecCodeEntryPtr)emit_GetCCPtr();

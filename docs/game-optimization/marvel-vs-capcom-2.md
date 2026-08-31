@@ -473,6 +473,88 @@ The 65-second profiling launch completed normally.
 binary preservation, exact guest-interval measurement and result CSVs. It
 refuses to continue if the SELF changes during a same-executable A/B.
 
+## Rejected iteration: bounded LZ HLE (2026-08-31)
+
+The 70-byte region at `8C0354D4`, CRC32 `9F73A69F`, was translated with
+the actual optimized JIT block boundaries and costs (2/5/3/22/8/6/3 cycles).
+The read-only SSA pass folds BRA/NOP at 550A, adding its two cycles to both
+conditional paths. Batches returned before the next debit could reach zero.
+The host decoder comparison passed 210,000 cases; on-device comparisons
+passed 16,384 batches, including ordered writes, all registers and flags.
+
+Initial A/B: off 0.844951, on 0.735801. The initial write guard confused SMC
+eligibility with actual page locks. A second implementation tracked real
+lock/unlock/reset operations and declined GGPO. Its on-device differential
+also passed 16,384 batches, but A/B still regressed: off 0.841751, on 0.746303.
+Thus the guard error was not the whole performance problem. Reject both;
+all LZ and page-tracking changes are removed from the active source. No gain
+is claimed from the unprofiled hypothesis that C++ dispatch overhead dominates.
+
+Initial evidence: `build-vita/devkit-logs/mvc2-lz-hle-ab/20260831-103659/`.
+Corrected guard: `build-vita/devkit-logs/mvc2-lz-lock-ab/20260831-104523/`;
+both preserve source snapshots, binaries, read-back configs and logs.
+Corrected shadow: `build-vita/devkit-logs/mvc2-lz-lock-shadow/20260831-104347/`.
+All fixed-window launches report expected ProcessKilled exits.
+Corrected raw ELF SHA-256:
+`EADA6DBF7AA3C3E0C9C67EE8785E66F5E04499555E03C4723ABCFCAAB22CD32F`.
+Corrected SELF SHA-256:
+`81F989E62AC09C8113D7CFC6B0F01D790915FFAC1CDD1E24380ED39C1A177DF2`.
+The original config and slot-6 state were re-read at preflight and matched
+their recorded hashes. The user state was not changed.
+
+## Retained iteration: direct FPU pair moves in the ARM dynarec
+
+For the target game, 64-bit floating-point memory transfers no longer bridge
+through integer scratch registers when the two SH4 registers are allocated
+in s16..s31. Three VMOVs become two bit-preserving VFP register moves. The
+single VLDR/VSTR d0 and its three-instruction fault-rewrite window are
+unchanged; the transfer is outside that window. No guest opcode, guest debit,
+memory access width/order, or scheduler check is removed. Adjacent and
+non-adjacent allocated pairs are both supported; s0/s1 never alias them.
+Experimental switch: `[perf] Mvc2DirectFpuPairs=yes`, default off.
+
+Shared emitter helpers were executed on the Vita over all 240 ordered
+distinct allocator-register pairs, with 4,096 cases each (983,040 total).
+Tests compare both old/new load and store paths against input bits, poison
+candidate destinations, and check FPSCR preservation across rounding modes,
+DN/FZ and cumulative flags. Cases include signed zeros, denormals, infinities,
+signalling/quiet NaNs and random payloads. Diagnostic run passed:
+`build-vita/devkit-logs/mvc2-fpu-pair-test/20260831-105613/`.
+
+Three cold-start, same-executable A/B pairs with diagnostics disabled:
+
+| FPU pair optimization | Guest/wall ratios | Mean | Population SD |
+| --- | --- | ---: | ---: |
+| Off | 0.840160, 0.841529, 0.839763 | 0.840484 | 0.000757 |
+| On | 0.873792, 0.874030, 0.872648 | 0.873490 | 0.000603 |
+
+Retain: +3.927% throughput, 84.05% to 87.35% real-time speed. All use the same
+RTC interval and preserve cache/division HLE. All six fixed windows complete
+with expected ProcessKilled. Diagnostic screenshot is coherent; audio is
+still not captured or auditioned. This does not establish full speed.
+
+Evidence: `build-vita/devkit-logs/mvc2-fpu-pair-ab/20260831-105829/`, containing
+source, executable, read-back config and log snapshots; per-launch XML/BMP
+files are in the similarly named sibling directories.
+
+- ELF: `FD888F7070154A4612E1C7DA8F91CCD21894BAFCC49AF1D80E921CE78C9A94BA`
+- VELF: `08D074FD583EFB20A6AF150F83DB70F01FA2859210FFA960892B92989242E02D`
+- SELF: `875489795E67EB600199DBF4BEE2BE345A125FA3CA77891119AA3338112E8ACA`
+- Adjacent SFO remains ATTRIBUTE2=12 with its original hash.
+
+Disc extraction and the IDA function contracts are documented separately in
+`marvel-vs-capcom-2-functions.md`. The first profiling attempt started too
+late and produced no trace; it is not performance evidence. A fresh capture
+uses a longer observation window.
+
+The successful post-change 20-second PC sample is in
+`build-vita/devkit-logs/occam/mvc2-fpu-pair-pc2/`, with the exact A/B ELF.
+It contains 5,005,728 application-range samples: SH4_TCB 38.27%, TA polygon
+parsing 9.40%, make_index 6.47%, pal4 texture conversion 4.95%, ARM7 4.82%,
+ta_vtx_data32 4.00%, AICA_Sample32 2.50%. These are waypoint-based function
+rankings in a later portion of the same match, not instruction timing or
+another estimate of the speedup. The launch used a 120-second fixed window.
+
 ## Next evidence gate
 
 1. Use the post-division profile for the next candidate. The vertex cluster
