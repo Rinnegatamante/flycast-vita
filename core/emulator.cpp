@@ -17,6 +17,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "emulator.h"
+#include "oslib/frame_trace.h"
 #include "types.h"
 #include "stdclass.h"
 #include "cfg/option.h"
@@ -793,6 +794,7 @@ void Emulator::start()
 	if (state == Running)
 		return;
 	verify(state == Loaded);
+	FT_INIT();
 	state = Running;
 	SetMemoryHandlers();
 	settings.aica.NoBatch = config::ForceWindowsCE || config::DSPEnabled || config::GGPOEnable;
@@ -815,6 +817,7 @@ void Emulator::start()
 	if (config::ThreadedRendering)
 	{
 		threadResult = std::async(std::launch::async, [this] {
+				FT_BIND_EMU();
 				InitAudio();
 
 				try {

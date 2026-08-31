@@ -15,7 +15,8 @@ param(
     [switch]$Clean,
     [switch]$Symbols,
     [switch]$LTO,
-    [switch]$JitRunProfile
+    [switch]$JitRunProfile,
+    [switch]$FrameTrace
 )
 
 Set-StrictMode -Version Latest
@@ -314,6 +315,7 @@ if (($BuildVitaGL -or $BuildSDL) -and (Test-Path -LiteralPath $buildPath)) {
 $symbolOption = if ($Symbols) { 'ON' } else { 'OFF' }
 $ltoOption = if ($LTO) { 'ON' } else { 'OFF' }
 $jitRunProfileOption = if ($JitRunProfile) { 'ON' } else { 'OFF' }
+$frameTraceOption = if ($FrameTrace) { 'ON' } else { 'OFF' }
 Invoke-Native $cmake @(
     '-S', $root,
     '-B', $buildPath,
@@ -324,6 +326,7 @@ Invoke-Native $cmake @(
     "-DVITA_VELF_SYMBOLS=$symbolOption",
     "-DVITA_LTO=$ltoOption",
     "-DVITA_JIT_RUN_PROFILE=$jitRunProfileOption",
+    "-DVITA_FRAME_TRACE=$frameTraceOption",
     "-DVITA_VITAGL_ROOT=$privatePrefix",
     '-DCMAKE_POLICY_VERSION_MINIMUM=3.5'
 )

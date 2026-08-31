@@ -1,4 +1,5 @@
 #include "TexCache.h"
+#include "oslib/frame_trace.h"
 #include "CustomTexture.h"
 #include "deps/xbrz/xbrz.h"
 #include "hw/pvr/pvr_mem.h"
@@ -569,6 +570,7 @@ void BaseTextureCacheData::ComputeHash()
 
 void BaseTextureCacheData::Update()
 {
+	FT_SCOPE(Render, Texture, tcw.full);
 	//texture state tracking stuff
 	Updates++;
 	dirty = 0;

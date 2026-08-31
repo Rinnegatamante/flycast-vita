@@ -7,7 +7,8 @@ param(
     [ValidateRange(30, 600)] [int]$ObservationSeconds = 35,
     [string]$BuildDir = 'build-vita',
     [string]$Target = '39829e00451207db324731441501004d',
-    [switch]$NoDebug
+    [switch]$NoDebug,
+    [switch]$PullFrameTrace
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -66,6 +67,19 @@ try {
             try { Copy-Devkit 'ux0:data/flycast/data/flycast.log' $logPath }
             finally { & $ctrl disconnect $Target | Out-Null }
             $lastRun = ([regex]::Split((Get-Content -LiteralPath $logPath -Raw), '(?m)(?=^\d\d:\d\d:\d\d\d .*Auto-starting content ux0:data/marvel/)'))[-1]
+            if ($PullFrameTrace -and (Get-Content -LiteralPath $readback -Raw) -match '(?m)^FrameTrace\s*=\s*yes\s*$') {
+                $traceStart = [regex]::Match($lastRun, 'frame-trace: start=(\d+)')
+                if (-not $traceStart.Success -or $lastRun -notmatch 'frame-trace: saved .*overflow=0/0 io_error=0') {
+                    throw 'Trace missing, overflowed, or not successfully saved'
+                }
+                $tracePath = Join-Path $evidence "$label-trace.csv"
+                Connect-Devkit
+                try { Copy-Devkit 'ux0:data/flycast/data/mvc2_frame_trace.csv' $tracePath }
+                finally { & $ctrl disconnect $Target | Out-Null }
+                if ((Get-Content -LiteralPath $tracePath -TotalCount 1) -notmatch ('origin_us=' + $traceStart.Groups[1].Value + '\b')) {
+                    throw 'Stale trace: origin does not match this launch'
+                }
+            }
             $markers = @([regex]::Matches($lastRun, '(?m)^(\d\d):(\d\d):(\d\d\d).*emu-second: rtc=(\d+)'))
             if ($markers.Count -lt 17 -or [long]$markers[0].Groups[4].Value -ne 1988906533 -or [long]$markers[16].Groups[4].Value -ne 1988906549) { throw 'Guest interval mismatch' }
             $times = @($markers[0], $markers[16]) | ForEach-Object { [double]$_.Groups[1].Value*60 + [double]$_.Groups[2].Value + [double]$_.Groups[3].Value/1000 }

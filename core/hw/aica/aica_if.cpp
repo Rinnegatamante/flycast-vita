@@ -5,6 +5,7 @@
 */
 
 #include "aica_if.h"
+#include "oslib/frame_trace.h"
 #include "aica_mem.h"
 #include "hw/holly/sb.h"
 #include "hw/holly/holly_intc.h"
@@ -176,6 +177,8 @@ template void WriteMem_aica_reg<>(u32 addr, u32 data);
 static int DreamcastSecond(int tag, int c, int j)
 {
 	RealTimeClock++;
+	FT_MARK(Emu, GuestSecond, RealTimeClock, ta_getGuestRenderCount());
+	FT_POLL();
 	NOTICE_LOG(AICA, "emu-second: rtc=%u guest-renders=%u", RealTimeClock, ta_getGuestRenderCount());
 
 	prof_periodical();

@@ -704,7 +704,7 @@ ProcessKilled. Original target config is restored. Evidence and source:
 ELF: `9C752FE02A6B3E79ADDD3158BC65992E3EBAD78254BD42831F34DF5E4F3B9FD8`.
 SELF: `CD22A6E1D0AFB07AC737782276D8E775CF924845594C25F7CCADCB43986C2312`.
 
-## Open diagnostic: slowdown when taking a hit
+## Initial diagnostic hypothesis: slowdown when taking a hit
 
 The user reports frame drops when the character is struck. That precise
 event has not yet been correlated with JIT misses or texture updates. The
@@ -721,6 +721,127 @@ state, and publishes into shared block/cache structures. A background design
 would require isolated compilation state, coherent input snapshots, safe
 publication/invalidation and a correctly timed interpreter fallback. Merely
 calling the present compiler from another thread is not safe.
+
+## Resolved diagnostic: large stutters include synchronous compilation bursts
+
+The aggregate profile above did not resolve the reported short stutters.
+Three cold replays of the same slot-6 state now reproduce the largest wall-time
+spikes at the same guest render-submission indices. The diagnostic records the
+entire `rdv_CompilePC` call, rather than inferring its duration from PC samples.
+
+| Guest submission ending interval | Interval wall time, three runs (ms) | Time inside compiler (ms) | Compiles starting in interval |
+| --- | ---: | ---: | ---: |
+| 215 | 86.15--89.52 | 61.79--64.36 | 407 |
+| 531 | 123.51--127.48 | 96.75--99.85 | 516 |
+| 611 | 40.74--41.68 | 20.57--20.96 | 111 |
+| 1385 | 43.66--45.22 | 23.00--23.84 | 83 |
+
+All 516 compiler entry PCs in interval 531 are first-seen in that capture,
+including after normalizing virtual aliases to physical addresses. For
+interval 215, 367 of 407 are first-seen; a RAM-page invalidation just before
+that interval accounts for some repeated code. Each capture has four RAM
+invalidation callbacks, no whole/temp code-cache clears and no block-check
+failure events. This is not a periodic cache-capacity flush.
+
+In interval 531, renderer processing occupies about 10--11 ms and texture
+updates about 4 ms of the same wall interval. These execute on the other
+thread and overlap one another; their durations must NOT be added to the
+compiler duration. None of the large texture/process/draw initialization
+spikes occur at interval 531: the largest of those occur before one second.
+
+Across the three usable captures, 43 of 44 guest-submission intervals at
+least 30 ms overlap compilation. All 25 intervals at least 40 ms between
+successful `Present()` returns overlap compilation. The ~78% wall-time share
+inside the compiler in interval 531 is direct evidence of a large synchronous
+JIT contribution, not just temporal coincidence. These scopes include
+preemption and are NOT exclusive CPU time; `Present()` return is NOT a
+hardware display-flip/GPU-completion measurement. Individual attacks were not
+visually labeled frame-by-frame, so this diagnoses the reproducible spikes
+in the supplied sequence, not every possible hit or game slowdown.
+
+The ordinary guest-submission median remains 18.37--18.94 ms (about 16.68 ms
+is needed at full speed). Removing compilation hitches alone therefore does
+not establish sustained full speed. The prior ranking of sustained execution
+cost remains useful, but it cannot dismiss these first-use compilation bursts.
+An asynchronous compiler or verified precompilation is now a justified
+candidate, not an implemented fix. Isolation, code/FPSCR coherence, safe
+publication and invalidation, and interpreter timing still need contracts.
+
+### Capture contract and reproduction
+
+- `scripts/build-vita.ps1 -Symbols -FrameTrace` enables `VITA_FRAME_TRACE`;
+  default builds compile every hook out and omit the collector entirely.
+- Add `FrameTrace = yes` and `FrameTraceSeconds = 30` under `[perf]` in the
+  accepted `copy-hle.cfg` configuration. `frame-trace.cfg` is the local copy.
+- Run `scripts/measure-mvc2.ps1` with `-PullFrameTrace -ObservationSeconds 65`.
+  It preserves ELF/SELF/SFO/config/logs, verifies the trace origin against the
+  current launch, rejects failed/overflowed exports, and restores config.
+- The trace starts before the emulation worker on T1212N, threaded rendering
+  only. It uses `sceKernelGetProcessTimeWide`, verified in the SDK guide and
+  installed header: a shared per-process microsecond clock. It does not use
+  adjustable wall-clock/RTC time.
+- Separate single-producer append-only buffers (65,536 emulation and 131,072
+  rendering records, 6 MiB total) publish immutable prefixes. Wrong-thread
+  writes and overflow are counted and make the analysis invalid. The collector
+  performs no file I/O, allocation, logging, wrapping or hot-path locking during
+  collection; existing emulator logs remain enabled as in the control.
+- Export occurs on a later emulated-second callback, after the 30-second
+  deadline. Cross-deadline scopes are omitted; the analyzer excludes the
+  first and last second. Post-capture export is not a performance sample.
+- `scripts/analyze-mvc2-frame-trace.py TRACE --output DIR` emits separate
+  guest-submission, vblank and successful-present interval CSVs plus JSON.
+  It clips interval overlaps, unions nested same-kind scopes, keeps other
+  categories separate, checks metadata/counts/timestamps, and counts first
+  virtual/physical compile PCs. `--test` covers boundaries, overlapping spans,
+  events spanning frames, aliases and capture-edge exclusion.
+
+All three captures have zero overflow and wrong-lane events, 959 guest
+submissions in the standard first 16-guest-second interval, normal fixed-window
+ProcessKilled exits and coherent final screenshots. No audio-continuity claim.
+The complete runs show an existing on-screen performance overlay; its readings
+are not used for the timing analysis and the overlay was not changed here.
+The initial 45-second host window ended before export, because it also
+included launch/load overhead; its incomplete trace is rejected, not treated
+as a crash. No DevKit reboot was needed in this diagnostic.
+
+Two same-binary capture-disabled/enabled pairs measure first-interval wall
+seconds of 18.901/18.858 and 18.370/18.355. Neither pair resolves an aggregate
+slowdown from enabling recording. The ~2.9% variation between pairs precludes
+claiming a precise zero-overhead result or a speed improvement from diagnostics.
+No physical or guest clock settings were changed. These runtime on/off tests
+do not compare a compile-time-disabled executable.
+
+Evidence (relative to this worktree):
+
+- Initial incomplete attempt: `build-vita/devkit-logs/mvc2-frame-trace/20260831-124000/`.
+- Complete first trace and runtime source snapshot:
+  `build-vita/devkit-logs/mvc2-frame-trace-complete/20260831-155832/`;
+  results in `analysis/`, raw `1-on-trace.csv`.
+- Repeated on/off pairs and two additional traces:
+  `build-vita/devkit-logs/mvc2-frame-trace-repeat/20260831-160039/`;
+  results in `1-on-analysis/` and `2-on-analysis/`.
+- Exact diagnostic ELF: `1370B47152A11092CFE83F190B8C975A90827AAD6C89CB5AE4A752F4525CE00F`.
+- Exact diagnostic SELF: `CA2E8BEAE48E3522045034EBBF1B16BB2593A5E3AD3533BDDDA85519E84FEDC9`.
+- Raw trace SHA-256, first: `7542283C26E6568E8C252370ED6B7BCF20A1135EFA7B540F1C899BB456A98D6E`.
+- Raw trace SHA-256, repeat 1: `E9925AD7688B8D3808A75617FF39E5B75A065E903103B7FDBBD3DA8152A04BA0`.
+- Raw trace SHA-256, repeat 2: `CE09AD3846C91B51A7B833E9275E1A39D829D34938F0A3272DEFC3EF1D4CF17F`.
+- Adjacent SFO still has ATTRIBUTE2=12 and SHA-256
+  `0106D568E3DC48228DE1A4AF779D2B4DAD9FE5DA393170ED826037A44A4038F0`.
+- Pulled target config after restoration matches its backup:
+  `69C99B54B98C4A1308C6E420C579FFEFDB1FCB086719D4800FA1F439CC0D3C60`.
+- Pulled slot 6 still matches the original user state:
+  `10F53EDAAB5DD2E5F0CB70115F7164C2EC305FDE63F57DC21CAA8959E77A4DA5`.
+  The target process is stopped after tests.
+
+The final local rebuild has `VITA_FRAME_TRACE=OFF`, symbols on and LTO off.
+`nm` verifies no collector or presentation-wrapper symbols remain; a host
+compile test verifies that disabled macros discard even undeclared argument
+expressions. The normal build launches slot 6 successfully and completes the
+45-second smoke window (ProcessKilled), 18.311 wall seconds / 16 guest seconds
+(0.873792). This single smoke result is not an optimization claim.
+Evidence: `build-vita/devkit-logs/mvc2-frame-trace-disabled-smoke/20260831-161300/`.
+Normal ELF: `DCCF62A66D0FCECA45EFBDD045F779DCDC5679215014C10F8B0E6A678AA06C31`;
+normal SELF: `DB460CA0BA5567FBD67D4655BEBF8B96A153AE5149E249678A1B2C4D0080CC01`.
 
 ## Next evidence gate
 

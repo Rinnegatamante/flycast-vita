@@ -1,4 +1,5 @@
 #include "types.h"
+#include "oslib/frame_trace.h"
 #include <unordered_set>
 
 #include "hw/sh4/sh4_interpreter.h"
@@ -49,6 +50,7 @@ void* emit_GetCCPtr() { return emit_ptr==0?(void*)&CodeCache[LastAddr]:(void*)em
 
 static void clear_temp_cache(bool full)
 {
+	FT_SCOPE(Emu, TempClear, full);
 	//printf("recSh4:Temp Code Cache clear at %08X\n", curr_pc);
 	TempLastAddr = 0;
 	bm_ResetTempCache(full);
@@ -56,6 +58,7 @@ static void clear_temp_cache(bool full)
 
 static void recSh4_ClearCache()
 {
+	FT_SCOPE(Emu, CacheClear, next_pc);
 	INFO_LOG(DYNAREC, "recSh4:Dynarec Cache clear at %08X free space %d", next_pc, emit_FreeSpace());
 	LastAddr = 0;
 	bm_ResetCache();
@@ -169,6 +172,7 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
 
 DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
 {
+	FT_SCOPE(Emu, Compile, next_pc);
 	u32 pc=next_pc;
 
 	if (emit_FreeSpace()<16*1024 || pc==0x8c0000e0 || pc==0xac010000 || pc==0xac008300)
@@ -249,6 +253,7 @@ u32 DYNACALL rdv_DoInterrupts(void* block_cpde)
 // addr must be the physical address of the start of the block
 DynarecCodeEntryPtr DYNACALL rdv_BlockCheckFail(u32 addr)
 {
+	FT_MARK(Emu, BlockCheck, addr, 0);
 	DEBUG_LOG(DYNAREC, "rdv_BlockCheckFail @ %08x", addr);
 	u32 blockcheck_failures = 0;
 	if (mmu_enabled())

@@ -1,4 +1,6 @@
 #include "ta_ctx.h"
+#include "oslib/frame_trace.h"
+#include "hw/sh4/sh4_sched.h"
 #include "spg.h"
 #include "cfg/option.h"
 #include "Renderer_if.h"
@@ -57,6 +59,7 @@ bool QueueRender(TA_context* ctx)
 	if (!skipFrame)
 	{
 		RenderCount++;
+		FT_MARK(Emu, GuestFrame, RenderCount, sh4_sched_now64());
 		if (RenderCount % (config::SkipFrame + 1) != 0)
 			skipFrame = true;
 		else if (config::ThreadedRendering && rqueue != nullptr
@@ -64,11 +67,15 @@ bool QueueRender(TA_context* ctx)
 			// The previous render hasn't completed yet so we wait.
 			// If autoskipframe is enabled (normal level), we only do so if the CPU is running
 			// fast enough over the last frames
+		{
+			FT_SCOPE(Emu, QueueWait, RenderCount);
 			frame_finished.Wait();
+		}
 	}
 
 	if (skipFrame || rqueue)
 	{
+		FT_MARK(Emu, QueueResult, RenderCount, 0);
 		tactx_Recycle(ctx);
 		if (!settings.disableRenderer)
 			fskip++;
@@ -79,6 +86,7 @@ bool QueueRender(TA_context* ctx)
 	frame_finished.Reset();
 	verify(rqueue == nullptr);
 	rqueue = ctx;
+	FT_MARK(Emu, QueueResult, RenderCount, 1);
 
 
 	return true;
@@ -87,7 +95,10 @@ bool QueueRender(TA_context* ctx)
 TA_context* DequeueRender()
 {
 	if (rqueue != nullptr)
+	{
 		FrameCount++;
+		FT_MARK(Render, RenderBegin, FrameCount, 0);
+	}
 
 	return rqueue;
 }

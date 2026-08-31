@@ -8,6 +8,7 @@
 #include <set>
 #include <map>
 #include "blockmanager.h"
+#include "oslib/frame_trace.h"
 #include "ngen.h"
 
 #include "../sh4_core.h"
@@ -660,6 +661,7 @@ void RuntimeBlockInfo::SetProtectedFlags()
 
 void bm_RamWriteAccess(u32 addr)
 {
+	FT_SCOPE(Emu, RamInvalidate, addr);
 	addr &= RAM_MASK;
 	if (unprotected_pages[addr / PAGE_SIZE])
 	{

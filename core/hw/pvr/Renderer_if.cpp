@@ -1,4 +1,6 @@
 #include "Renderer_if.h"
+#include "oslib/frame_trace.h"
+#include "hw/sh4/sh4_sched.h"
 #include "spg.h"
 #include "hw/pvr/pvr_mem.h"
 #include "rend/TexCache.h"
@@ -44,14 +46,28 @@ extern bool rend_needs_resize;
 
 static bool rend_frame(TA_context* ctx)
 {
-	bool proc = renderer->Process(ctx);
+	bool proc;
+	{
+		FT_SCOPE(Render, Process, FrameCount);
+		proc = renderer->Process(ctx);
+	}
 
 	if (!proc || (!ctx->rend.isRTT && !ctx->rend.isRenderFramebuffer))
 		// If rendering to texture, continue locking until the frame is rendered
 		re.Set();
 	rend_allow_rollback();
 
+	FT_SCOPE(Render, Draw, FrameCount);
 	return proc && renderer->Render();
+}
+
+static bool traced_present()
+{
+	FT_SCOPE(Render, Present, FrameCount);
+	bool result = renderer->Present();
+	if (result)
+		FT_MARK(Render, Presented, FrameCount, 0);
+	return result;
 }
 
 bool rend_single_frame(const bool& enabled)
@@ -63,7 +79,7 @@ bool rend_single_frame(const bool& enabled)
 		if (do_swap)
 		{
 			do_swap = false;
-			if (renderer->Present())
+			if (traced_present())
 			{
 				rs.Set(); // don't miss any render
 				retro_rend_present();
@@ -94,7 +110,7 @@ bool rend_single_frame(const bool& enabled)
 		}
 		if (frame_rendered)
 		{
-			frame_rendered = renderer->Present();
+			frame_rendered = traced_present();
 			if (frame_rendered)
 				retro_rend_present();
 		}
@@ -265,11 +281,15 @@ void rend_start_render(TA_context *ctx)
 void rend_end_render()
 {
 	if (pend_rend && config::ThreadedRendering)
+	{
+		FT_SCOPE(Emu, RenderWait, ta_getGuestRenderCount());
 		re.Wait();
+	}
 }
 
 void rend_vblank()
 {
+	FT_MARK(Emu, VBlank, ta_getGuestRenderCount(), sh4_sched_now64());
 	if (!render_called && fb_dirty && FB_R_CTRL.fb_enable)
 	{
 		DEBUG_LOG(PVR, "Direct framebuffer write detected");
