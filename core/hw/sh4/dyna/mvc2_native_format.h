@@ -37,6 +37,15 @@ struct Record {
 };
 static_assert(sizeof(Header) == 104, "cache header ABI");
 static_assert(sizeof(Record) == 96, "cache record ABI");
+inline bool sameSourceVariant(const Record& left, const Record& right) {
+    // Native offsets and emitted sizes can differ with allocator position.
+    // Lookup safety is determined by the same guest identity, protection
+    // class and exact source/page hashes used by sourceMatches().
+    return left.guestPc == right.guestPc && left.fpuMode == right.fpuMode
+        && left.guestBytes == right.guestBytes && left.flags == right.flags
+        && left.pageCount == right.pageCount
+        && memcmp(left.pageHash, right.pageHash, sizeof(left.pageHash)) == 0;
+}
 inline bool validRecord(const Record& entry, uint32_t prefix, uint32_t previousEnd,
                         uint32_t codeCapacity, uint32_t ramMask) {
     if (entry.offset < prefix || entry.offset < previousEnd || (entry.offset & 3)

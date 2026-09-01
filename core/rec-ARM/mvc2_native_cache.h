@@ -4,13 +4,14 @@ extern "C" const unsigned char mvc2_native_build_id[];
 namespace mvc2_native {
 static Header identity;
 static std::vector<Record> loaded, learned;
-static std::vector<u8> learnedCode, consumed;
+static std::vector<u8> loadedCode, learnedCode, consumed;
 struct KeyHash {
     size_t operator()(u64 key) const { return hashKey32(key); }
 };
 static std::unordered_multimap<u64, size_t, KeyHash> blockIndex;
-static bool initialized, enabled, recording, validating, validateHits, reported;
-static u32 mapGeneration, hits, misses, sourceRejects, usedRejects, validated, validationFailures, saturated;
+static bool initialized, enabled, recording, merging, validating, validateHits, reported;
+static u32 mapGeneration, hits, misses, sourceRejects, usedRejects, duplicateSkips;
+static u32 validated, validationFailures, saturated;
 static int validationTRegister, validationFlagsCondition;
 static u64 protectedPageHash[4096];
 static bool protectedPageVerified[4096];
@@ -20,6 +21,7 @@ static int testResetAfter;
 static bool testResetDone, testResetPending;
 #endif
 static u64 started, deadline;
+static u32 checkpointSeconds;
 static std::string path;
 
 static u64 configHash()
@@ -92,6 +94,7 @@ static bool readCache()
     valid = valid && !memcmp(header.magic, identity.magic, sizeof(header.magic))
         && header.version == Version && header.headerSize == sizeof(Header)
         && header.recordSize == sizeof(Record) && header.count <= MaxRecords
+        && header.extent >= identity.prefixSize && header.extent <= CODE_SIZE
         && header.headerHash == headerHash(header) && header.reserved == 0;
     if (valid) {
         reason = "build/layout/config";
@@ -101,14 +104,18 @@ static bool readCache()
             && header.layoutHash == identity.layoutHash && header.configHash == identity.configHash;
     }
     u32 end = identity.prefixSize;
+    u32 nativeBytes = 0;
     u64 digest = 0;
     if (valid) {
         reason = "records/checksum";
         loaded.reserve(header.count);
+        if (merging)
+            loadedCode.reserve(std::min<u32>(header.extent - header.prefixSize, MaxNativeBytes));
         for (u32 n = 0; n < header.count && valid; ++n) {
             Record entry{};
             valid = fread(&entry, sizeof(entry), 1, file) == 1
                 && validRecord(entry, identity.prefixSize, end, CODE_SIZE, RAM_MASK)
+                && entry.size <= MaxNativeBytes - nativeBytes
                 && !excludedPc(entry.guestPc);
             if (!valid) break;
             u8* destination = CodeCache + entry.offset;
@@ -117,6 +124,9 @@ static bool readCache()
             digest = XXH64(&entry, sizeof(entry), digest);
             digest = XXH64(destination, entry.size, digest);
             loaded.push_back(entry);
+            if (merging)
+                loadedCode.insert(loadedCode.end(), destination, destination + entry.size);
+            nativeBytes += entry.size;
             end = entry.offset + entry.size;
         }
         valid = valid && digest == header.payloadHash && header.extent == end
@@ -125,6 +135,7 @@ static bool readCache()
     fclose(file);
     if (!valid) {
         loaded.clear();
+        loadedCode.clear();
         WARN_LOG(DYNAREC, "mvc2-native: cache rejected (%s); ordinary JIT", reason);
         return false; // No code is published and the normal allocator can overwrite it.
     }
@@ -140,13 +151,19 @@ static bool readCache()
         (unsigned)loaded.size(), end, (unsigned long long)(sceKernelGetProcessTimeWide() - started));
     return true;
 }
-static void saveCache()
+static bool saveCache(bool keepLearned)
 {
-    if (learned.empty()) return;
+    if (learned.empty()) return true;
     Header header = identity;
-    header.count = learned.size();
+    header.count = loaded.size() + learned.size();
     header.extent = learned.back().offset + learned.back().size;
     size_t offset = 0;
+    for (const Record& entry : loaded) {
+        header.payloadHash = XXH64(&entry, sizeof(entry), header.payloadHash);
+        header.payloadHash = XXH64(loadedCode.data() + offset, entry.size, header.payloadHash);
+        offset += entry.size;
+    }
+    offset = 0;
     for (const Record& entry : learned) {
         header.payloadHash = XXH64(&entry, sizeof(entry), header.payloadHash);
         header.payloadHash = XXH64(learnedCode.data() + offset, entry.size, header.payloadHash);
@@ -160,6 +177,12 @@ static void saveCache()
         setvbuf(file, nullptr, _IOFBF, 65536);
         valid = fwrite(&header, sizeof(header), 1, file) == 1;
         offset = 0;
+        for (const Record& entry : loaded) {
+            valid = valid && fwrite(&entry, sizeof(entry), 1, file) == 1;
+            valid = valid && fwrite(loadedCode.data() + offset, entry.size, 1, file) == 1;
+            offset += entry.size;
+        }
+        offset = 0;
         for (const Record& entry : learned) {
             valid = valid && fwrite(&entry, sizeof(entry), 1, file) == 1;
             valid = valid && fwrite(learnedCode.data() + offset, entry.size, 1, file) == 1;
@@ -168,21 +191,26 @@ static void saveCache()
         valid = fclose(file) == 0 && valid;
     }
     valid = valid && rename(temporary.c_str(), path.c_str()) == 0;
-    NOTICE_LOG(DYNAREC, "mvc2-native: saved=%u bytes=%u saturated=%u io_error=%u header_hash=%016llx path=%s",
-        header.count, (unsigned)learnedCode.size(), saturated, !valid,
+    NOTICE_LOG(DYNAREC, "mvc2-native: saved=%u base=%u added=%u bytes=%u saturated=%u io_error=%u header_hash=%016llx path=%s",
+        header.count, (unsigned)loaded.size(), (unsigned)learned.size(),
+        (unsigned)(loadedCode.size() + learnedCode.size()), saturated, !valid,
         (unsigned long long)header.headerHash, path.c_str());
-    std::vector<Record>().swap(learned);
-    std::vector<u8>().swap(learnedCode);
+    if (valid && !keepLearned) {
+        std::vector<Record>().swap(learned);
+        std::vector<u8>().swap(learnedCode);
+    }
+    return valid;
 }
 }
 
 void mvc2NativeCacheReset()
 {
     using namespace mvc2_native;
-    initialized = enabled = recording = validating = reported = false;
+    initialized = enabled = recording = merging = validating = reported = false;
     memset(protectedPageVerified, 0, sizeof(protectedPageVerified));
     std::vector<Record>().swap(loaded);
     std::vector<Record>().swap(learned);
+    std::vector<u8>().swap(loadedCode);
     std::vector<u8>().swap(consumed);
     std::vector<u8>().swap(learnedCode);
     blockIndex.clear();
@@ -209,6 +237,7 @@ void mvc2NativeCacheBegin()
         return;
     recording = cfgLoadBool("perf", "Mvc2NativeCacheRecord", false);
     bool load = cfgLoadBool("perf", "Mvc2NativeCache", false);
+    merging = recording && load && cfgLoadBool("perf", "Mvc2NativeCacheMerge", false);
     if (!recording && !load) return;
     if (memcmp(mvc2_native_build_id, "\x04\0\0\0\x14\0\0\0\x03\0\0\0GNU\0", 16)) {
         WARN_LOG(DYNAREC, "mvc2-native: missing linked build identity");
@@ -228,17 +257,27 @@ void mvc2NativeCacheBegin()
     identity.configHash = configHash();
     memcpy(identity.buildId, mvc2_native_build_id + 16, sizeof(identity.buildId));
     mapGeneration = _vmem_native_mapping_generation();
-    hits = misses = sourceRejects = usedRejects = validated = validationFailures = saturated = 0;
+    hits = misses = sourceRejects = usedRejects = duplicateSkips = 0;
+    validated = validationFailures = saturated = 0;
     pageChecks = 0;
 #ifdef VITA_FRAME_TRACE
     testResetAfter = cfgLoadInt("perf", "Mvc2NativeCacheResetAfter", 0);
 #endif
     validateHits = cfgLoadBool("perf", "Mvc2NativeCacheValidate", false);
     started = sceKernelGetProcessTimeWide();
-    deadline = started + std::max(5, std::min(120, cfgLoadInt("perf", "Mvc2NativeCacheSeconds", 30))) * 1000000ULL;
+    checkpointSeconds = std::max(5, std::min(120, cfgLoadInt("perf", "Mvc2NativeCacheSeconds", 30)));
+    deadline = started + checkpointSeconds * 1000000ULL;
     path = get_writable_data_path("mvc2_native_cache.bin");
-    // Deliberately separate cold training from replay for attributable measurements.
-    if (recording) {
+    // Ordinary experiments keep cold training and replay separate. Explicit
+    // beta merge mode reserves the existing layout, reuses its valid records,
+    // and appends only runtime misses at later native offsets.
+    if (merging) {
+        enabled = readCache();
+        learned.reserve(MaxRecords - loaded.size());
+        learnedCode.reserve(MaxNativeBytes - loadedCode.size());
+        NOTICE_LOG(DYNAREC, "mvc2-native: incremental recording base=%u bytes=%u origin=%llu",
+            (unsigned)loaded.size(), (unsigned)loadedCode.size(), (unsigned long long)started);
+    } else if (recording) {
         learned.reserve(MaxRecords);
         learnedCode.reserve(MaxNativeBytes);
         NOTICE_LOG(DYNAREC, "mvc2-native: recording cold blocks, origin=%llu", (unsigned long long)started);
@@ -262,7 +301,10 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
         WARN_LOG(DYNAREC, "mvc2-native: memory mapping changed; recording rejected");
         return;
     }
-    if (learned.size() == MaxRecords || block->host_code_size > MaxNativeBytes - learnedCode.size()) {
+    const size_t recordCount = loaded.size() + learned.size();
+    const size_t nativeBytes = loadedCode.size() + learnedCode.size();
+    if (recordCount >= MaxRecords || nativeBytes >= MaxNativeBytes
+            || block->host_code_size > MaxNativeBytes - nativeBytes) {
         ++saturated;
         return;
     }
@@ -285,7 +327,9 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
     entry.tRegister = tRegister;
     entry.flagsCondition = flagsCondition;
     entry.pageCount = ((entry.guestPc & 4095) + entry.guestBytes + 4095) / 4096;
-    u32 previousEnd = learned.empty() ? identity.prefixSize : learned.back().offset + learned.back().size;
+    u32 previousEnd = learned.empty()
+        ? (loaded.empty() ? identity.prefixSize : loaded.back().offset + loaded.back().size)
+        : learned.back().offset + learned.back().size;
     if (!validRecord(entry, identity.prefixSize, previousEnd, CODE_SIZE, RAM_MASK)) return;
     u32 offset = entry.guestPc & RAM_MASK;
     if (entry.flags & NeedsSmcCheck) {
@@ -297,6 +341,18 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
         offset &= ~4095u;
         for (u32 page = 0; page < entry.pageCount; ++page, offset += 4096)
             entry.pageHash[page] = XXH64(mem_b.data + offset, 4096, 0);
+    }
+    // Do not append a source/protection variant that this run has not consumed.
+    // If an identical record was consumed and the block is compiled again after
+    // invalidation, retain another instance because native addresses cannot be
+    // safely reused within the same process.
+    const auto range = blockIndex.equal_range(key(entry.guestPc, entry.fpuMode));
+    for (auto it = range.first; it != range.second; ++it) {
+        const size_t n = it->second;
+        if (!consumed[n] && sameSourceVariant(loaded[n], entry)) {
+            ++duplicateSkips;
+            return;
+        }
     }
     learned.push_back(entry);
     const u8* code = (const u8*)block->code;
@@ -389,17 +445,25 @@ void mvc2NativeCachePoll()
         return;
     }
 #endif
-    if (!initialized || reported || (!enabled && !recording && !validationFailures)
+    if (!initialized || (reported && !merging) || (!enabled && !recording && !validationFailures)
             || sceKernelGetProcessTimeWide() < deadline)
         return;
-    reported = true;
-    NOTICE_LOG(DYNAREC, "mvc2-native: report hits=%u misses=%u source_reject=%u used_reject=%u validated=%u failures=%u page_checks=%u",
-        hits, misses, sourceRejects, usedRejects, validated, validationFailures, pageChecks);
+    NOTICE_LOG(DYNAREC, "mvc2-native: report hits=%u misses=%u source_reject=%u used_reject=%u duplicate_skip=%u validated=%u failures=%u page_checks=%u",
+        hits, misses, sourceRejects, usedRejects, duplicateSkips,
+        validated, validationFailures, pageChecks);
     if (recording) {
+        const bool identityValid = _vmem_native_mapping_generation() == mapGeneration
+            && configHash() == identity.configHash;
+        const bool saved = identityValid && saveCache(merging);
+        if (merging && saved && !saturated) {
+            // Periodic atomic checkpoints bound data loss for long tester
+            // sessions without publishing appended entries in this process.
+            deadline = sceKernelGetProcessTimeWide() + checkpointSeconds * 1000000ULL;
+            return;
+        }
         recording = false;
-        if (_vmem_native_mapping_generation() == mapGeneration && configHash() == identity.configHash)
-            saveCache();
     }
+    reported = true;
 }
 #ifdef VITA_FRAME_TRACE
 static bool mvc2NativeCacheApplyTestReset()

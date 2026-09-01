@@ -71,11 +71,14 @@ int main(int argc, char** argv) {
         memcpy(&header, data.data(), sizeof(header));
         if (memcmp(header.magic, "MVC2ARM1", 8) || header.version != Version
                 || header.headerSize != sizeof(Header) || header.recordSize != sizeof(Record)
-                || header.count > MaxRecords || header.headerHash != hashHeader(header))
+                || header.count > MaxRecords || header.extent < header.prefixSize
+                || header.extent > Capacity || header.headerHash != hashHeader(header))
             throw std::runtime_error("header checksum/format");
         size_t offset = sizeof(Header);
         uint32_t end = header.prefixSize, nativeBytes = 0, fpuBlocks = 0;
         uint32_t smcBlocks = 0, smcPage12fBlocks = 0;
+        std::vector<Record> records;
+        records.reserve(header.count);
         uint64_t digest = 0;
         uint32_t dumpPc = 0;
         if (argc == 3 && std::string(argv[2]).compare(0, 5, "--pc=") == 0)
@@ -92,6 +95,8 @@ int main(int argc, char** argv) {
             digest = XXH64(data.data() + offset, entry.size, digest);
             offset += entry.size;
             end = entry.offset + entry.size;
+            if (entry.size > MaxNativeBytes - nativeBytes)
+                throw std::runtime_error("native byte limit");
             nativeBytes += entry.size;
             fpuBlocks += (entry.flags & HasFpuOp) != 0;
             if (entry.flags & NeedsSmcCheck) {
@@ -99,6 +104,7 @@ int main(int argc, char** argv) {
                 if (((entry.guestPc & RamMask) & ~0xfffu) == 0x12f000u)
                     smcPage12fBlocks++;
             }
+            records.push_back(entry);
             if (dumpPc && entry.guestPc == dumpPc) {
                 printf("record[%u] offset=%u size=%u guest_bytes=%u fpu=%08x flags=%u cycles=%u guest_ops=%u host_ops=%u end=%u branch=%08x next=%08x relink=%u hash=%016llx native=",
                        n, entry.offset, entry.size, entry.guestBytes, entry.fpuMode,
@@ -113,8 +119,18 @@ int main(int argc, char** argv) {
         }
         if (offset != data.size() || end != header.extent || digest != header.payloadHash)
             throw std::runtime_error("payload checksum/extent/trailing data");
-        printf("records=%u native_bytes=%u extent=%u fpu_blocks=%u smc_blocks=%u smc_page_12f=%u build_id=",
-               header.count, nativeBytes, header.extent, fpuBlocks, smcBlocks, smcPage12fBlocks);
+        uint32_t duplicateVariants = 0;
+        for (size_t n = 0; n < records.size(); ++n) {
+            for (size_t previous = 0; previous < n; ++previous) {
+                if (sameSourceVariant(records[n], records[previous])) {
+                    ++duplicateVariants;
+                    break;
+                }
+            }
+        }
+        printf("records=%u native_bytes=%u extent=%u fpu_blocks=%u smc_blocks=%u smc_page_12f=%u duplicate_variants=%u build_id=",
+               header.count, nativeBytes, header.extent, fpuBlocks, smcBlocks,
+               smcPage12fBlocks, duplicateVariants);
         for (auto byte : header.buildId) printf("%02x", byte);
         puts("");
         if (argc == 4) {

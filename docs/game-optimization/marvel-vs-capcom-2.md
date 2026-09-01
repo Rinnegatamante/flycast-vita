@@ -1492,11 +1492,84 @@ rejects and zero failures; no cache-disable or error line was present. Evidence:
 This is temporal stability from one savestate, not proof of between-fight or
 whole-game coverage. Reduced SMC remains enabled and no check was removed.
 
+### Incremental beta cache collector accepted, 2026-09-01
+
+The beta collector can load a compatible native cache and record misses in the
+same process. It reserves the loaded native layout, preserves the exact stored
+native bytes and appends newly emitted records after the existing extent.
+Checkpoints rewrite the aggregate through a temporary file and atomic rename;
+an I/O failure stops recording without replacing the last good file. Header
+extent and cumulative native-byte limits are validated before allocation. The
+existing build/layout/config/prefix/source checks and writable-SMC inline
+checks remain mandatory.
+
+An intermediate three-pass test exposed non-convergent collection: the base
+had zero duplicate source variants, then successive merges contained 4, 8 and
+12 duplicates while hit/miss counts did not improve. All four new records per
+pass were unconsumed writable-SMC variants. The accepted collector skips an
+identical loaded source/protection variant only while its native instance is
+still unconsumed. It still records another instance after a real consumption
+and invalidation, because a live/stale native address cannot be reused safely.
+
+The corrected traced build has GNU build ID
+`3fcd2d5d2a166e0152945a83b89cd0740b58bb1a`. Its deterministic progression was:
+
+- cold base: 6,939 records, 750,396 native bytes, zero duplicates;
+- first merge: 6,976 records, 754,744 native bytes, 37 additions and four
+  duplicate skips;
+- second merge: 6,976 records and byte-identical SHA256
+  `3CF6BAFF69A58ED156C63B5116CBC6FC42FBB6128389FBDFC54BCD27045E1390`,
+  with four duplicate skips and no rewrite;
+- regeneration replay: 6,846 validated hits and zero failures.
+
+Evidence is under
+`build-vita/devkit-logs/mvc2-pal-native-dedup-base/20260901-214912/`,
+`mvc2-pal-native-dedup-merge1/20260901-215102/`,
+`mvc2-pal-native-dedup-merge2/20260901-215241/` and
+`mvc2-pal-native-dedup-validate/20260901-215425/`.
+
+The tester Release has tracing and JIT-run profiling disabled, LTO off, ASLR
+disabled and GNU build ID `418e00f3c262e3e5e01483381db0049fa316c4a5`.
+Hashes are ELF
+`5543C42A6668AEA06145EB91A6002671EAE128269FD8305BFBCD6B69D25E5CA7`,
+SELF `A0E1800F5C92C133FB0F914C85D6FC2C09FAACA15E9B26DEAF770B5A39ECE6C2`
+and VPK
+`F6DB84ECC3D98C06BC950DF93086FC3DBEBBFFB238EB018A2E100AA69AB897F7`.
+The adjacent `sce_sys/param.sfo` retains ATTRIBUTE2=12 and SHA256
+`0106D568E3DC48228DE1A4AF779D2B4DAD9FE5DA393170ED826037A44A4038F0`.
+
+Two identical cold-boot collector sessions demonstrated cross-session replay.
+The second loaded all 7,082 seed records, executed 7,076 native hits, skipped
+six duplicate variants and added ten unique records. The supplied seed has
+7,092 records, 739,280 native bytes, zero duplicate source variants, no
+saturation and SHA256
+`02A4E319D92E657C6026FAEBA79CADE0052F4376CBA939FCB0FE98401E80E1A7`.
+Evidence is under
+`build-vita-cache-normal/devkit-logs/mvc2-beta-release-coldboot-smoke/20260901-215930/`,
+`mvc2-beta-release-coldboot-seed/20260901-220420/` and
+`mvc2-beta-release-coldboot-replay/20260901-220643/`.
+
+The cold-boot prefix is 1,156 bytes while the automatic savestate path emits an
+812-byte prefix. Code/context bases, layout, config and build ID match, but the
+prefix hash does not; the guard correctly rejects attempts to mix these native
+layouts. The beta therefore ships only the cold-boot seed. Independent tester
+caches must remain separate because appended native offsets may overlap; they
+cannot be concatenated without replay or a future sharded address allocator.
+
+The distributable archive is
+`build-vita-cache-normal/mvc2-beta-collector-beta1.zip`, SHA256
+`03ADE43DC6182E850B5863082B32F18A7469B0A594192C7B90D743A1DDD3EB2E`.
+Its collector boots the exact ROM, uses PAL/50 Hz settings, retains Reduced SMC
+checks and checkpoints every 120 seconds. This is a data-collection beta, not a
+claim of whole-game coverage or full speed.
+
 ## Next evidence gate
 
-1. Extend the beta trainer across played matches, stages, character teams and
-   between-fight transitions. Merge only exact build/config/PC/FPSCR/source
-   variants and repeat regeneration plus corruption guards on the aggregate.
+1. Distribute the beta collector across played matches, stages, character teams
+   and between-fight transitions. Keep each returned cache/log/savestate as a
+   separate artifact; replay representative scenes into one canonical layout,
+   then repeat regeneration and corruption guards on that aggregate. Implement
+   disjoint native-offset shards before attempting direct parallel cache merge.
 2. Instrument actual Reduced-SMC failures and writable-page invalidations over
    fight transitions before implementing an adaptive policy. Do not infer hot
    SMC blocks from ordinary JIT compilation events.
