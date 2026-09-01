@@ -21,6 +21,11 @@
 #include <unistd.h>
 #include <array>
 #include <map>
+#include <unordered_map>
+#include <xxhash.h>
+#ifdef __vita__
+#include <psp2/kernel/processmgr.h>
+#endif
 
 #include <aarch32/macro-assembler-aarch32.h>
 using namespace vixl::aarch32;
@@ -34,6 +39,7 @@ using namespace vixl::aarch32;
 #include "hw/sh4/dyna/ngen.h"
 #include "hw/sh4/dyna/ssa_regalloc.h"
 #include "hw/sh4/dyna/hle_patch.h"
+#include "hw/sh4/dyna/mvc2_native_cache.h"
 #include "hw/sh4/sh4_mem.h"
 #include "cfg/option.h"
 #include "cfg/cfg.h"
@@ -84,6 +90,8 @@ struct DynaRBI: RuntimeBlockInfo
 	virtual u32 Relink();
 	virtual void Relocate(void* dst) { }
 	Register T_reg;
+	// Cached blocks omit IR. -2 derives the condition from ordinary compiler IR.
+	int nativeFlagsCondition = -2;
 };
 
 using FPBinOP = void (MacroAssembler::*)(DataType, SRegister, SRegister, SRegister);
@@ -183,14 +191,22 @@ static std::map<shilop, ConditionType> ccmap;
 static std::map<shilop, ConditionType> ccnmap;
 static bool restarting;
 static u32 jmp_stack;
+#if defined(__vita__) && defined(VITA_FRAME_TRACE)
+static bool mvc2NativeCacheApplyTestReset();
+#endif
 
 void ngen_mainloop(void* context)
 {
 	do {
 		restarting = false;
 		generate_mainloop();
+		mvc2NativeCacheBegin();
 
 		mainloop(context);
+#if defined(__vita__) && defined(VITA_FRAME_TRACE)
+		if (mvc2NativeCacheApplyTestReset())
+			restarting = true;
+#endif
 		if (restarting)
 			p_sh4rcb->cntx.CpuRunning = 1;
 	} while (restarting);
@@ -247,6 +263,8 @@ static u32 relinkBlock(DynaRBI *block)
 #ifndef CANONICALTEST
 		bool last_op_sets_flags = !block->has_jcond && !block->oplist.empty() &&
 				block->oplist.back().rd._reg == reg_sr_T && ccmap.count(block->oplist.back().op);
+		if (block->nativeFlagsCondition != -2)
+			last_op_sets_flags = block->nativeFlagsCondition >= 0;
 #else
 		bool last_op_sets_flags = false;
 #endif
@@ -255,12 +273,13 @@ static u32 relinkBlock(DynaRBI *block)
 
 		if (last_op_sets_flags)
 		{
-			shilop op = block->oplist.back().op;
-
-			if ((block->BlockType & 1) == 1)
-				CC = ccmap[op];
+			if (block->nativeFlagsCondition >= 0)
+				CC = (ConditionType)block->nativeFlagsCondition;
 			else
-				CC = ccnmap[op];
+			{
+				shilop op = block->oplist.back().op;
+				CC = (block->BlockType & 1) ? ccmap[op] : ccnmap[op];
+			}
 		}
 		else
 		{
@@ -2261,7 +2280,17 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 
 	//host code size needs to cover the entire range of the block
 	block->host_code_size = pEnd - (u8*)block->code;
+	int flagsCondition = -1;
+	DynaRBI* native = (DynaRBI*)block;
+	const bool conditional = block->BlockType == BET_Cond_0 || block->BlockType == BET_Cond_1;
+	if (conditional && !block->has_jcond && !block->oplist.empty()
+			&& block->oplist.back().rd._reg == reg_sr_T && ccmap.count(block->oplist.back().op))
+		flagsCondition = (block->BlockType & 1) ? ccmap[block->oplist.back().op] : ccnmap[block->oplist.back().op];
+	mvc2NativeCacheRecord(block, conditional && native->T_reg.IsRegister() ? native->T_reg.GetCode() : -1,
+		flagsCondition);
 }
+
+#include "mvc2_native_cache.h"
 
 void ngen_ResetBlocks()
 {

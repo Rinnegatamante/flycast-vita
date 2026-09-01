@@ -65,6 +65,14 @@ static void loadSpecialSettings()
 		{
 			INFO_LOG(BOOT, "Enabling NEON SH4 FPU path for Marvel vs. Capcom 2");
 			config::DynarecUseNeon.override(true);
+			// MVC2 rewrites guest code between fights. Off can leave stale native
+			// blocks alive; Reduced checks the first instruction of writable blocks
+			// without imposing the full per-block comparison cost.
+			if (config::DynarecSmcChecks < 1)
+			{
+				NOTICE_LOG(BOOT, "Forcing Reduced SMC checks for Marvel vs. Capcom 2");
+				config::DynarecSmcChecks.override(1);
+			}
 		}
 #endif
 

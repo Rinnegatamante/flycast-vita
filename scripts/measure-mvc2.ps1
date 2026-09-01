@@ -5,6 +5,10 @@ param(
     [Parameter(Mandatory)] [string[]]$Labels,
     [ValidateRange(1, 100)] [int]$Iterations = 1,
     [ValidateRange(30, 600)] [int]$ObservationSeconds = 35,
+    # Zero is permitted only for a single discovery run, never for an A/B.
+    [uint64]$ExpectedFirstRtc = 1988906533,
+    [ValidateRange(1, 120)] [int]$GuestSeconds = 16,
+    [int]$ExpectedGuestRenders = -1,
     [string]$BuildDir = 'build-vita',
     [string]$Target = '39829e00451207db324731441501004d',
     [switch]$NoDebug,
@@ -13,6 +17,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ($Configs.Count -ne $Labels.Count -or $Configs.Count -eq 0) { throw 'Config/label count mismatch' }
+if ($ExpectedFirstRtc -eq 0 -and ($Configs.Count -ne 1 -or $Iterations -ne 1)) { throw 'Discover the RTC in one run, then use an explicit ExpectedFirstRtc for comparisons' }
 if ($RunName -notmatch '^[a-zA-Z0-9._-]+$' -or ($Labels | Where-Object { $_ -notmatch '^[a-zA-Z0-9._-]+$' })) { throw 'Invalid run name/label' }
 $configPaths = @($Configs | ForEach-Object { (Resolve-Path -LiteralPath (Join-Path $root $_)).Path })
 $build = Join-Path $root $BuildDir
@@ -67,6 +72,18 @@ try {
             try { Copy-Devkit 'ux0:data/flycast/data/flycast.log' $logPath }
             finally { & $ctrl disconnect $Target | Out-Null }
             $lastRun = ([regex]::Split((Get-Content -LiteralPath $logPath -Raw), '(?m)(?=^\d\d:\d\d:\d\d\d .*Auto-starting content ux0:data/marvel/)'))[-1]
+            if ((Get-Content -LiteralPath $readback -Raw) -match '(?m)^Mvc2NativeCacheRecord\s*=\s*yes\s*$') {
+                $nativeSaved = [regex]::Match($lastRun, 'mvc2-native: saved=\d+ bytes=\d+ saturated=\d+ io_error=0 header_hash=([0-9a-f]{16})')
+                if (-not $nativeSaved.Success) { throw 'Native cache export missing or failed' }
+                $nativePath = Join-Path $evidence "$label-native-cache.bin"
+                Connect-Devkit
+                try { Copy-Devkit 'ux0:data/flycast/data/mvc2_native_cache.bin' $nativePath }
+                finally { & $ctrl disconnect $Target | Out-Null }
+                $nativeBytes = [IO.File]::ReadAllBytes($nativePath)
+                if ($nativeBytes.Length -lt 104 -or ([BitConverter]::ToUInt64($nativeBytes, 72).ToString('x16')) -ne $nativeSaved.Groups[1].Value) {
+                    throw 'Native cache does not match this recording'
+                }
+            }
             if ($PullFrameTrace -and (Get-Content -LiteralPath $readback -Raw) -match '(?m)^FrameTrace\s*=\s*yes\s*$') {
                 $traceStart = [regex]::Match($lastRun, 'frame-trace: start=(\d+)')
                 if (-not $traceStart.Success -or $lastRun -notmatch 'frame-trace: saved .*overflow=0/0 io_error=0') {
@@ -80,10 +97,17 @@ try {
                     throw 'Stale trace: origin does not match this launch'
                 }
             }
-            $markers = @([regex]::Matches($lastRun, '(?m)^(\d\d):(\d\d):(\d\d\d).*emu-second: rtc=(\d+)'))
-            if ($markers.Count -lt 17 -or [long]$markers[0].Groups[4].Value -ne 1988906533 -or [long]$markers[16].Groups[4].Value -ne 1988906549) { throw 'Guest interval mismatch' }
-            $times = @($markers[0], $markers[16]) | ForEach-Object { [double]$_.Groups[1].Value*60 + [double]$_.Groups[2].Value + [double]$_.Groups[3].Value/1000 }
-            $result = [pscustomobject]@{ Pair=$pair; Variant=$Labels[$variant]; WallSeconds=$times[1]-$times[0]; Ratio=16/($times[1]-$times[0]); Evidence=$logPath }
+            $markers = @([regex]::Matches($lastRun, '(?m)^(\d+):(\d\d):(\d\d\d).*emu-second: rtc=(\d+) guest-renders=(\d+)'))
+            if ($markers.Count -lt ($GuestSeconds + 1)) { throw 'Insufficient guest interval markers' }
+            $firstRtc = [uint64]$markers[0].Groups[4].Value
+            if ($ExpectedFirstRtc -ne 0 -and $firstRtc -ne $ExpectedFirstRtc) { throw "Guest interval mismatch: expected $ExpectedFirstRtc, got $firstRtc" }
+            for ($second = 0; $second -le $GuestSeconds; ++$second) {
+                if ([uint64]$markers[$second].Groups[4].Value -ne ($firstRtc + $second)) { throw 'Non-consecutive guest RTC markers' }
+            }
+            $guestRenders = [long]$markers[$GuestSeconds].Groups[5].Value - [long]$markers[0].Groups[5].Value
+            if ($ExpectedGuestRenders -ge 0 -and $guestRenders -ne $ExpectedGuestRenders) { throw "Guest render count mismatch: $guestRenders" }
+            $times = @($markers[0], $markers[$GuestSeconds]) | ForEach-Object { [double]$_.Groups[1].Value*60 + [double]$_.Groups[2].Value + [double]$_.Groups[3].Value/1000 }
+            $result = [pscustomobject]@{ Pair=$pair; Variant=$Labels[$variant]; FirstRtc=$firstRtc; GuestSeconds=$GuestSeconds; GuestRenders=$guestRenders; WallSeconds=$times[1]-$times[0]; Ratio=$GuestSeconds/($times[1]-$times[0]); Discovery=($ExpectedFirstRtc -eq 0); Evidence=$logPath }
             $results.Add($result)
             $results | Export-Csv -LiteralPath (Join-Path $evidence 'results.csv') -NoTypeInformation
             Write-Host ('RESULT {0}: wall={1:F3} ratio={2:F9}' -f $label, $result.WallSeconds, $result.Ratio)

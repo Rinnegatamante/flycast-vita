@@ -10,6 +10,7 @@
 #include "blockmanager.h"
 #include "oslib/frame_trace.h"
 #include "ngen.h"
+#include "mvc2_native_cache.h"
 
 #include "../sh4_core.h"
 #include "hw/sh4/sh4_mem.h"
@@ -266,6 +267,7 @@ static void bm_DumpJitBlocks()
 
 void bm_Periodical_1s()
 {
+	mvc2NativeCachePoll();
 	bm_CleanupDeletedBlocks();
 #ifdef VITA_JIT_RUN_PROFILE
 	++jitProfileSecond;
@@ -295,6 +297,7 @@ void bm_vmem_pagefill(void** ptr, u32 size_bytes)
 
 void bm_Reset()
 {
+	mvc2NativeCacheReset();
 	bm_CleanupDeletedBlocks();
 #ifdef VITA_JIT_RUN_PROFILE
 	jitProfileSecond = 0;
@@ -661,6 +664,7 @@ void RuntimeBlockInfo::SetProtectedFlags()
 
 void bm_RamWriteAccess(u32 addr)
 {
+	mvc2NativeCacheInvalidatePage(addr);
 	FT_SCOPE(Emu, RamInvalidate, addr);
 	addr &= RAM_MASK;
 	if (unprotected_pages[addr / PAGE_SIZE])

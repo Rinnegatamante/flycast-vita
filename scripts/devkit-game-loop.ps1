@@ -32,6 +32,21 @@ function Invoke-Ctrl {
     }
 }
 
+function Save-Screenshot {
+    param([string]$Path, [string]$TargetId)
+    for ($attempt = 1; $attempt -le 3; ++$attempt) {
+        & $script:psp2ctrl screenshot app $Path $TargetId
+        if ($LASTEXITCODE -eq 0) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    # Target Manager occasionally returns a transient GDI+ error here.  A
+    # missing diagnostic image must not skip the subsequent target cleanup.
+    Write-Warning "Target screenshot failed after 3 attempts: $Path"
+    return $false
+}
+
 function Resolve-FromRoot {
     param([string]$Path, [string]$Root)
     if ([IO.Path]::IsPathRooted($Path)) {
@@ -156,7 +171,7 @@ try {
                 [DateTime]::UtcNow -ge $started.AddSeconds($ObservationSeconds)) {
                 $fixedWindowComplete = $true
                 if ($Screenshot) {
-                    Invoke-Ctrl -Arguments @('screenshot', 'app', (Join-Path $runDir 'final.bmp'), $Target)
+                    Save-Screenshot -Path (Join-Path $runDir 'final.bmp') -TargetId $Target | Out-Null
                 }
                 Invoke-Ctrl -Arguments @('pkill', $ProcessName, $Target)
                 Write-Host "[$RunName] Fixed observation window completed."
@@ -165,7 +180,7 @@ try {
             if ($null -ne $observationDeadline -and
                 [DateTime]::UtcNow -ge $observationDeadline) {
                 if ($Screenshot) {
-                    Invoke-Ctrl -Arguments @('screenshot', 'app', (Join-Path $runDir 'final.bmp'), $Target)
+                    Save-Screenshot -Path (Join-Path $runDir 'final.bmp') -TargetId $Target | Out-Null
                 }
                 Invoke-Ctrl -Arguments @('pkill', $ProcessName, $Target)
                 $observationDeadline = $null
@@ -177,7 +192,7 @@ try {
 
         if (-not $run.HasExited) {
             if ($Screenshot) {
-                Invoke-Ctrl -Arguments @('screenshot', 'app', (Join-Path $runDir 'timeout.bmp'), $Target)
+                Save-Screenshot -Path (Join-Path $runDir 'timeout.bmp') -TargetId $Target | Out-Null
             }
             & $script:psp2ctrl pkill $ProcessName $Target 2>$null | Out-Null
             Stop-Process -Id $run.Id -ErrorAction SilentlyContinue

@@ -8,7 +8,7 @@ enum Lane { Emu, Render };
 enum Kind { Compile, CacheClear, TempClear, BlockCheck, RamInvalidate,
     GuestFrame, QueueResult, QueueWait, RenderWait, RenderBegin,
     Process, Draw, Present, Presented, Texture, GuestSecond, VBlank,
-    Decode, Analyse, RegAlloc, Emit };
+    Decode, Analyse, RegAlloc, Emit, NativeHit, NativeCheck };
 void init();
 void bindEmu();
 void poll(); // Emulation thread only; exports after the capture deadline.

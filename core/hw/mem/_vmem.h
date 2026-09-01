@@ -97,6 +97,10 @@ void _vmem_release();
 //dynarec helpers
 void* _vmem_read_const(u32 addr,bool& ismem,u32 sz);
 void* _vmem_write_const(u32 addr,bool& ismem,u32 sz);
+#ifdef __vita__
+u64 _vmem_native_layout_hash();
+u32 _vmem_native_mapping_generation();
+#endif
 
 extern u8* virt_ram_base;
 extern bool vmem_4gb_space;

@@ -28,7 +28,7 @@ static std::atomic<uint32_t> wrongLane{0};
 static const char* names[] = { "compile", "cache_clear", "temp_clear", "block_check", "ram_invalidate",
     "guest_frame", "queue_result", "queue_wait", "render_wait", "render_begin",
     "process", "draw", "present", "presented", "texture", "guest_second", "vblank",
-    "decode", "analyse", "reg_alloc", "emit" };
+    "decode", "analyse", "reg_alloc", "emit", "native_hit", "native_check" };
 
 void init()
 {

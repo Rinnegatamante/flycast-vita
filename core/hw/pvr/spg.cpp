@@ -8,6 +8,9 @@
 #include "rend/TexCache.h"
 #include "hw/maple/maple_if.h"
 #include "serialize.h"
+#ifdef VITA
+#include "cfg/cfg.h"
+#endif
 
 //SPG emulation; Scanline/Raster beam registers & interrupts
 
@@ -49,6 +52,19 @@ void CalculateSync()
 		Line_Cycles /= 2;
 
 	Frame_Cycles = pvr_numscanlines * Line_Cycles;
+#ifdef VITA
+	// Boot-time observation only: the game programs the actual video timing,
+	// which need not match the Broadcast option (notably with an imported disc).
+	if (Frame_Cycles != 0 && settings.content.gameId == "T1212N"
+			&& cfgLoadBool("perf", "Mvc2VideoTimingLog", false))
+	{
+		NOTICE_LOG(PVR, "mvc2-video: refresh_hz=%.4f field_cycles=%u lines=%u hcount=%u interlace=%u pal=%u ntsc=%u broadcast=%d cable=%d region=%d",
+			(double)SH4_MAIN_CLOCK / Frame_Cycles, Frame_Cycles, pvr_numscanlines,
+			(unsigned)SPG_LOAD.hcount, (unsigned)SPG_CONTROL.interlace,
+			(unsigned)SPG_CONTROL.PAL, (unsigned)SPG_CONTROL.NTSC,
+			(int)config::Broadcast, (int)config::Cable, (int)config::Region);
+	}
+#endif
 	prv_cur_scanline = 0;
 	clc_pvr_scanline = 0;
 

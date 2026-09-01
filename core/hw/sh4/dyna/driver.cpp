@@ -15,6 +15,7 @@
 
 #include "blockmanager.h"
 #include "ngen.h"
+#include "mvc2_native_cache.h"
 #include "decoder.h"
 
 #include <xxhash.h>
@@ -58,6 +59,7 @@ static void clear_temp_cache(bool full)
 
 static void recSh4_ClearCache()
 {
+	mvc2NativeCacheReset();
 	FT_SCOPE(Emu, CacheClear, next_pc);
 	INFO_LOG(DYNAREC, "recSh4:Dynarec Cache clear at %08X free space %d", next_pc, emit_FreeSpace());
 	LastAddr = 0;
@@ -181,6 +183,13 @@ DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
 
 	if (emit_FreeSpace()<16*1024 || pc==0x8c0000e0 || pc==0xac010000 || pc==0xac008300)
 		recSh4_ClearCache();
+
+	if (blockcheck_failures == 0 && smc_hotspots.find(pc) == smc_hotspots.end())
+		if (RuntimeBlockInfo* cached = mvc2NativeCacheLookup(pc, fpscr.full))
+		{
+			bm_AddBlock(cached);
+			return cached->code;
+		}
 
 	RuntimeBlockInfo* rbi = ngen_AllocateBlock();
 
@@ -424,10 +433,60 @@ static void recSh4_Init()
 
 static void recSh4_Term()
 {
+	mvc2NativeCacheReset();
 	INFO_LOG(DYNAREC, "recSh4 Term");
 	bm_Term();
 	sh4Interp.Term();
 }
+
+#if defined(__vita__) && FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_ARM
+// Diagnostic-only execution path: regenerate at the original address, compare,
+// then restore every byte before any guest code can run. Never advance the SH4.
+bool rdv_ValidateNativeBlock(const mvc2_native::Record& entry)
+{
+	u8* destination = CodeCache + entry.offset;
+	std::vector<u8> backup(destination, destination + mvc2_native::MaxBlockBytes);
+	Sh4Context savedContext;
+	memcpy(&savedContext, &Sh4cntx, sizeof(savedContext));
+	u32* savedEmit = emit_ptr;
+	u32* savedLimit = emit_ptr_limit;
+	RuntimeBlockInfo* fresh = nullptr;
+	bool setup = false;
+	bool same = false;
+	try
+	{
+		fresh = ngen_AllocateBlock();
+		setup = fresh->Setup(entry.guestPc, fpscr);
+		if (setup)
+		{
+			emit_ptr = (u32*)destination;
+			emit_ptr_limit = (u32*)(destination + mvc2_native::MaxBlockBytes);
+			ngen_Compile(fresh, entry.flags & mvc2_native::NeedsSmcCheck,
+				false, false, true);
+			same = fresh->host_code_size == entry.size && fresh->sh4_code_size == entry.guestBytes
+				&& fresh->guest_cycles == entry.cycles && fresh->guest_opcodes == entry.guestOps
+				&& fresh->host_opcodes == entry.hostOps
+				&& (u32)fresh->BlockType == entry.endType && fresh->BranchBlock == entry.branchPc
+				&& fresh->NextBlock == entry.nextPc && fresh->relink_offset == entry.relinkOffset
+				&& ((fresh->has_fpu_op ? mvc2_native::HasFpuOp : 0u)
+						| (fresh->has_jcond ? mvc2_native::HasJcond : 0u)
+						| (entry.flags & mvc2_native::NeedsSmcCheck)) == entry.flags
+				&& memcmp(destination, backup.data(), entry.size) == 0;
+		}
+	}
+	catch (...) { WARN_LOG(DYNAREC, "mvc2-native: regeneration threw; rejecting cache"); }
+	if (setup) fresh->Discard();
+	delete fresh;
+	emit_ptr = savedEmit;
+	emit_ptr_limit = savedLimit;
+	same = same && memcmp(&savedContext, &Sh4cntx, sizeof(savedContext)) == 0;
+	memcpy(&Sh4cntx, &savedContext, sizeof(savedContext));
+	memcpy(destination, backup.data(), backup.size());
+	vmem_platform_flush_cache(destination, destination + backup.size() - 1,
+		destination, destination + backup.size() - 1);
+	return same;
+}
+#endif
 
 static bool recSh4_IsCpuRunning()
 {

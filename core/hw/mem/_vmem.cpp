@@ -5,6 +5,13 @@
 #include "hw/sh4/dyna/blockmanager.h"
 #include "hw/sh4/sh4_mem.h"
 #include "oslib/oslib.h"
+#ifdef __vita__
+#include <xxhash.h>
+static u32 nativeMappingGeneration;
+#define VMEM_MAPPING_CHANGED() (++nativeMappingGeneration)
+#else
+#define VMEM_MAPPING_CHANGED() do {} while (0)
+#endif
 
 #define HANDLER_MAX 0x1F
 #define HANDLER_COUNT (HANDLER_MAX+1)
@@ -24,6 +31,22 @@ static _vmem_WriteMem32FP* _vmem_WF32[HANDLER_COUNT];
 
 //upper 8b of the address
 static void* _vmem_MemInfo_ptr[0x100];
+#ifdef __vita__
+u32 _vmem_native_mapping_generation() { return nativeMappingGeneration; }
+u64 _vmem_native_layout_hash()
+{
+	u64 hash = XXH64(_vmem_MemInfo_ptr, sizeof(_vmem_MemInfo_ptr), 0);
+	hash = XXH64(_vmem_RF8, sizeof(_vmem_RF8), hash);
+	hash = XXH64(_vmem_RF16, sizeof(_vmem_RF16), hash);
+	hash = XXH64(_vmem_RF32, sizeof(_vmem_RF32), hash);
+	hash = XXH64(_vmem_WF8, sizeof(_vmem_WF8), hash);
+	hash = XXH64(_vmem_WF16, sizeof(_vmem_WF16), hash);
+	hash = XXH64(_vmem_WF32, sizeof(_vmem_WF32), hash);
+	const uintptr_t bases[] = { (uintptr_t)virt_ram_base, (uintptr_t)p_sh4rcb,
+		(uintptr_t)mem_b.data, (uintptr_t)vram.data, (uintptr_t)aica_ram.data };
+	return XXH64(bases, sizeof(bases), hash);
+}
+#endif
 
 #define MAP_RAM_START_OFFSET  0
 #define MAP_VRAM_START_OFFSET (MAP_RAM_START_OFFSET+RAM_SIZE)
@@ -263,6 +286,7 @@ _vmem_handler _vmem_register_handler(
 									 _vmem_WriteMem32FP* write32
 									 )
 {
+	VMEM_MAPPING_CHANGED();
 	_vmem_handler rv=_vmem_lrp++;
 
 	verify(rv<HANDLER_COUNT);
@@ -292,6 +316,7 @@ static u32 FindMask(u32 msk)
 //map a registered handler to a mem region
 void _vmem_map_handler(_vmem_handler Handler,u32 start,u32 end)
 {
+	VMEM_MAPPING_CHANGED();
 	verify(start<0x100);
 	verify(end<0x100);
 	verify(start<=end);
@@ -304,6 +329,7 @@ void _vmem_map_handler(_vmem_handler Handler,u32 start,u32 end)
 //map a memory block to a mem region
 void _vmem_map_block(void* base,u32 start,u32 end,u32 mask)
 {
+	VMEM_MAPPING_CHANGED();
 	verify(start<0x100);
 	verify(end<0x100);
 	verify(start<=end);
@@ -319,6 +345,7 @@ void _vmem_map_block(void* base,u32 start,u32 end,u32 mask)
 
 void _vmem_mirror_mapping(u32 new_region,u32 start,u32 size)
 {
+	VMEM_MAPPING_CHANGED();
 	u32 end=start+size-1;
 	verify(start<0x100);
 	verify(end<0x100);
@@ -336,6 +363,7 @@ void _vmem_mirror_mapping(u32 new_region,u32 start,u32 size)
 //init/reset/term
 void _vmem_init()
 {
+	VMEM_MAPPING_CHANGED();
 	//clear read tables
 	memset(_vmem_RF8,0,sizeof(_vmem_RF8));
 	memset(_vmem_RF16,0,sizeof(_vmem_RF16));
@@ -465,6 +493,7 @@ static void _vmem_term_mappings()
 
 void _vmem_init_mappings()
 {
+	VMEM_MAPPING_CHANGED();
 	_vmem_term_mappings();
 	// Fallback to statically allocated buffers, this results in slow-ops being generated.
 	if (vmemstatus == MemTypeError)

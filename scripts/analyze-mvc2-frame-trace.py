@@ -9,7 +9,7 @@ from pathlib import Path
 
 KINDS = ("compile", "cache_clear", "temp_clear", "ram_invalidate", "queue_wait",
          "render_wait", "process", "draw", "present", "texture",
-         "decode", "analyse", "reg_alloc", "emit")
+         "decode", "analyse", "reg_alloc", "emit", "native_check")
 
 
 def union_us(events, lo, hi):
@@ -68,6 +68,7 @@ def interval_rows(events, marker, cutoff):
                 row["compile_first_pc"] = sum(e.get("first_pc", False) for e in started)
                 row["compile_first_physical_pc"] = sum(e.get("first_physical_pc", False) for e in started)
         row["block_check_starts"] = sum(lo <= e["start_us"] < hi for e in grouped["block_check"])
+        row["native_hits"] = sum(lo <= e["start_us"] < hi for e in grouped["native_hit"])
         row["dropped"] = sum(lo <= e["start_us"] < hi and not e["detail"] for e in grouped["queue_result"])
         # These overlap one another across lanes, so do not add them together.
         rows.append(row)

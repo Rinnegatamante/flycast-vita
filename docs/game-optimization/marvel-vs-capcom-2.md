@@ -1015,20 +1015,500 @@ and unchanged slot 6
 `10F53EDAAB5DD2E5F0CB70115F7164C2EC305FDE63F57DC21CAA8959E77A4DA5`.
 The target process is stopped after the test.
 
+## Native ARM persistence experiment (2026-08-31)
+
+Continues accepted tree `b9b53b966`. This is native-code persistence, not
+load-time recompilation. The existing Vita SELF already uses `NOASLR`
+(`vita-make-fself -na`); disabling ASLR was not a new optimization.
+
+The file keeps emitted ARM bytes at their original CodeCache offsets, plus
+plain block/relink metadata. It is accepted only for T1212N with matching
+linked GNU build ID, generated helper prefix, host code/context bases,
+complete memory-handler layout and code-generation settings. MMU and JIT
+run-counter builds are excluded. Code checksums and bounded records are
+validated before publication. Only self-generated local caches are intended;
+these checks are not authentication of executable files from third parties.
+
+At first use, full protected source pages must match, covering both decoded
+instructions and SSA-folded literals. Cached page hashes are valid only while
+write protection remains active and are revoked on RAM writes/cache resets.
+Each native slot is consumed at most once per cache lifetime; changed pages,
+already-used slots and unknown blocks fall back to the original JIT. The
+three accepted HLE entry PCs are excluded, retaining their original CRC gates.
+No guest execution, clock change or speculative memory callback is involved
+in loading or checking a cached block. New blocks do not require allocating a
+second executable arena.
+
+Configuration under `[perf]`: `Mvc2NativeCache` enables replay;
+`Mvc2NativeCacheRecord` performs separate cold training (takes precedence);
+`Mvc2NativeCacheSeconds` bounds training/reporting to 5--120 seconds, default
+30; `Mvc2NativeCacheValidate` regenerates each hit at its original address,
+compares bytes/metadata/context, then restores the original bytes before
+execution. Validation is diagnostic and must not be included in speed claims.
+The file is `ux0:data/flycast/data/mvc2_native_cache.bin`. A changed executable
+requires retraining. The existing slot-6 state is never overwritten.
+
+### Rejected intermediate implementations
+
+First implementation: ELF
+`F6376EAE8AF1A460A9F14D8B8325A0F3F2C3F3002C6A3F33617D9BFDA125E7E6`,
+build ID `1cd71c8afae14a70db5afa68dff1bf8cc3d8e1b0`.
+Cold training saved 6,688 blocks / 717,328 native bytes, including 976 FPU
+blocks, without saturation or I/O errors. Regeneration checked 6,074 hits
+with zero byte/metadata/context mismatches. Reading and indexing cost about
+2.14 seconds before gameplay. Evidence:
+`build-vita/devkit-logs/mvc2-native-record/20260831-175431/` and
+`mvc2-native-validate/20260831-175702/`.
+
+Two same-binary pairs in `mvc2-native-ab/20260831-180003/` gave off
+18.449/18.441 s versus on 18.417/18.350 s per 16 guest seconds. This small
+aggregate change did not resolve stutter: interval 215 worsened from about
+90.6 ms to 133.9--138.3 ms; interval 531 remained about 125--128 ms even though
+all 516 blocks avoided decoding/emission. Original source is preserved in
+that evidence directory's `source-v1/`. Do not retain this version.
+
+Second implementation memoizes protected-page checks. ELF
+`0E2D03FA73FEC3004B70A4D69FA60CA34AAE58D4B34525A83C9E388FF2718F61`,
+build ID `31ffc9343e006cef0eb821bca892cf8ce9b6d945`.
+Training: `mvc2-native-pages-record/20260831-221630/`, 6,654 records /
+712,824 native bytes, 947 FPU blocks; cache SHA-256
+`90A7FA490DF5CDD234793B708A9E8711EA358DE6FA5AD5E9E7E0A202E70E13FF`.
+Validation: `mvc2-native-pages-validate/20260831-222315/`, 6,074 checked hits,
+zero failures and only 135 page hashes. Screenshot shows coherent combat;
+audio not captured. The same-binary repeated comparison is
+`mvc2-native-pages-ab/20260831-222549/`: off 18.702/18.277 s, on 18.101/18.141 s.
+Interval 215 still regressed (90.98--91.80 to 118.51--122.43 ms); interval 531
+improved from 127.86--130.63 to 103.91--107.30 ms. This intermediate version
+is not retained despite its aggregate improvement.
+
+This exposed an independent indexing defect in the prototype: VitaSDK's
+`std::hash<unsigned long long>` casts to 32-bit `size_t`, dropping the PC
+half of `(PC << 32) | FPSCR`. All PCs with the same FPSCR therefore collide.
+The corrected hash folds both halves; the host fixture explicitly checks
+12,000 different PCs in a simulated 32-bit hash domain. Page-check wall time
+at interval 531 was already below 1 ms, so repeatedly hashing RAM no longer
+explained the remaining ~79 ms lookup/publication wall time.
+
+A forced-reset diagnostic also stopped at guest second 3:
+`mvc2-native-pages-reset/20260831-222032/` and corresponding launch XML.
+Calling ResetCache inside UpdateSystem removes the current block before
+`intc_sched` calls `rdv_DoInterrupts` to recover its guest PC. That function
+dereferences the now-missing RBI; the fault handler's own dereference of the
+bad address obscures the original fault. The diagnostic now requests a stop,
+returns completely from native code, and only then resets/restarts the cache.
+The failed test is excluded from timings; target config was restored, and no
+devkit reboot was used to mask this software lifecycle error.
+
+### Corrected index and safe reset validation
+
+Trace ELF `2A35072BB9987CD52A7F8E39CA18D86A0E8BA96097AC17BB31CE94CA1DF2109C`;
+SELF `FA57F89F6E605086539844CB5826D8BB327B0374932B8A066018012ED10434FE`;
+build ID `7198ed43797cbce47df377ce41c0a882f0f34230`. Training evidence:
+`mvc2-native-hash-record/20260831-223455/`, 6,688 records / 717,328 native
+bytes / 976 FPU blocks. Cache SHA-256:
+`4EA0BEE29C7AFEACE10B2232A26218FD451E4FE674C057506730791F219D3827`.
+
+The corrected reset test completes the 55-second window with planned
+ProcessKilled: `mvc2-native-hash-reset-clean/20260831-223932/`. It validates
+4,243 hits before resetting and 5,431 afterwards, zero failures. After reset,
+111 source-page rejections correctly take the ordinary compiler. Loading and
+indexing take 160.1/160.6 ms, down from about 2.14 s with the colliding hash.
+The fixed 16-guest-second interval still has 959 render submissions. Its wall
+time (20.474 s) includes diagnostic recompilation/reset and is NOT a speed
+measurement. No guest-time rewind or savestate replacement is used.
+
+The preceding reset attempt with frame tracing on completed gameplay but
+overflowed the 65,536-event emulation buffer by 11,637 events:
+`mvc2-native-hash-reset/20260831-223658/`. The measurement helper rejected
+that trace as intended. The repeat keeps regeneration checks enabled but
+disables trace recording at runtime, avoiding incomplete timing evidence.
+
+### Selective interpreter proposal: candidate discovery, not an allowlist
+
+The user's suggested policy (retain pre-fight native blocks, interpret
+selected newly encountered fight blocks) is implementable but not yet
+measured. Removing compilation cost can increase repeated execution cost.
+The decision requires both first-use compilation time and post-birth run
+counts, followed by actual interpreter-vs-native timing. In particular, the
+existing SH4 interpreter charges `CPU_RATIO=8` per instruction, unlike the
+dynarec's block cycle accounting. Direct use of its Step/Run interface is not
+a timing-preserving fallback and must not be counted as a speed improvement.
+
+`scripts/analyze-mvc2-stutter-candidates.py` extracts PCs whose compilation
+overlaps >=30 ms guest-submission intervals with >=10 ms compilation overlap.
+It reuses trace validation, clips scopes to interval boundaries, and emits
+an explicitly non-executable candidate CSV. The first extraction contains
+2,043 PCs from `mvc2-native-ab/20260831-180003/1-off-trace.csv`.
+Evidence: that directory's `stutter-candidates/`.
+
+A historical cross-reference to the original slot-6 JIT profile (another
+build, guest seconds 15--30) illustrates why a blanket exclusion is unsafe:
+220 of interval 531's PCs show 12 later runs, whereas `8C12A1FA` shows 15,285,
+`8C12A212` 14,669 and `8C12A224` 7,217. These are preliminary address matches,
+not current-build frequency/cost measurements. Missing matches mean unknown,
+not zero runs. Runtime selection would need a revision, PC, FPSCR and source
+fingerprint gate, plus unchanged registers, exceptions and cycle/interrupt
+semantics. No blanket interpreter rule has been enabled.
+
+### PAL/50 Hz proposal: no configuration change in the benchmark
+
+Flycast exposes Broadcast=PAL and non-VGA Cable choices, including TV
+Composite (local `Dreamcast.Broadcast=1`, `Dreamcast.Cable=3`). A genuine
+50-Hz game mode raises the per-frame budget from 16.67 to 20 ms; it does not
+automatically reduce all emulation work by 20%, and a simple presentation cap
+does not remove SH4 compilation bursts. Frame-based game logic without PAL
+compensation could instead run at 5/6 of the intended speed. A 50-Hz source
+also has uneven presentation cadence on the current 60-Hz Vita output.
+
+Critically, `core/serialize.cpp` restores Broadcast/Cable/Region from the
+state and `core/hw/pvr/pvr.cpp` restores video registers. Changing config and
+reloading slot 6 is therefore not a valid PAL-mode experiment. The actual
+scanout period is derived from SPG_LOAD/FB_R_CTRL in CalculateSync. Testing
+the supplied USA revision would require a separate cold boot and verification
+of actual refresh, timer, animation and audio pacing. Its PAL support has not
+been established here; no alternate ROM, video-timing patch or PAL benchmark
+has been substituted for the current workload.
+
+### Native cache v3: repeated A/B completed before the manual PAL session
+
+Evidence: `build-vita/devkit-logs/mvc2-native-hash-ab/20260831-224101/`.
+Same slot-6 workload and 16 guest seconds (RTC 1988906533--1988906549),
+959 guest renders, trace overflow zero. Off wall times: 18.336 / 18.315 s;
+on: 17.710 / 17.715 s. Ratio of mean throughputs improves about 3.46%,
+to about 90.3% guest-time speed, not full speed. Matched submission intervals:
+
+| Interval | Off 1 / 2 (ms) | On 1 / 2 (ms) |
+|---|---|---|
+| 215 | 91.403 / 90.955 | 38.962 / 39.209 |
+| 531 | 128.688 / 129.179 | 33.232 / 33.170 |
+| 611 | 42.145 / 41.862 | 22.103 / 22.403 |
+| 1385 | 44.537 / 44.746 | 21.391 / 21.291 |
+
+On-1 compile-entry costs for these intervals are 15.797, 8.413, 2.053,
+1.326 ms; interval 531 has 516 native hits. Remaining-candidate extraction
+with >=30 ms intervals and >=10 ms ordinary-JIT overlap returns no PCs;
+lowering the explicitly selected compile threshold to 1 ms finds 40 ordinary
+compilations at interval 215. This is not evidence of zero JIT cost or a
+validated interpreter exclusion list. See `remaining-stutter-candidates/`
+and `remaining-stutter-candidates-1ms/` beneath the A/B directory.
+
+The wrong-build negative test completed, observing guarded ordinary-JIT
+fallback: `mvc2-native-reject-bad-build/20260831-224827/`. The user then
+requested a manual PAL cold boot. The automated pipeline was stopped during
+`mvc2-native-reject-truncate/20260831-224955/`; although rejection appears in
+the log, the interrupted run is not a completed test. Bad-offset, bad-page,
+bad-native and normal/non-traced cache record/replay tests remain pending.
+The original configuration and verified v3 trace cache were restored before
+preparing the separate manual session. Do not mark this candidate finally
+accepted or resume a timed test while the user's manual session is active.
+
+### Manual PAL cold boot, 2026-08-31 22:57 Europe/Rome
+
+User requested a new cold boot without loading any state and with the game
+left running to create a separate PAL state. The optimization skill's
+configuration backup and executable/evidence requirements are retained;
+the normal fixed-window helper is deliberately not used because it kills
+the process. `scripts/start-mvc2-manual.ps1` refuses an already-running
+Flycast, backs up and verifies configuration, launches a hidden host runner
+without timeout or automatic input, and leaves the connection alive.
+
+Build: `scripts/build-vita.ps1 -BuildDir build-vita-cache-normal -Symbols`.
+LTO, frame tracing and JIT run profiling disabled. The only new diagnostic
+logs the actual PVR timing when CalculateSync runs, behind the default-off
+`perf.Mvc2VideoTimingLog` switch; it changes no video registers or cycles.
+Native cache load/record/validation are disabled for this new workload.
+Accepted HLE and FPU-pair settings are retained; SH4 downclock remains 1.0.
+
+- ELF SHA256: `1286D6A2F7A34BB4CC94C66D2C318C54EBABFBE79468255EF0082D3516DECE88`.
+- SELF SHA256: `B73BC6F3F0DEF262C579F2C19B5D0FC6CFAC367C8F12A60AA1C5677FAB27468E`.
+- GNU build ID: `c11268322d7e7b5ae659c02257a6d7201afae51c`.
+- Adjacent `sce_sys/param.sfo` verified `ATTRIBUTE2=12`; SHA256
+  `0106D568E3DC48228DE1A4AF779D2B4DAD9FE5DA393170ED826037A44A4038F0`.
+- Config template:
+  `build-vita/workloads/marvel-vs-capcom-2/experiments/manual-pal-coldboot.cfg`.
+- Readback config SHA256:
+  `AECE5EEB4B6201C7567961E2AFD92BDBF199E9944593CE53AC46270E8EC67BAF`.
+- Broadcast=1 (PAL), Cable=3 (Composite), requested Region=2. The ROM's
+  region check correctly selects USA (1); Broadcast remains PAL.
+- AutoLoadState=no, AutoSaveState=no. SavestateSlot=7 is **Slot 8 in the UI**,
+  previously unused. Existing `_6.state` is not loaded or overwritten.
+- Evidence and preserved ELF/SELF/SFO/config:
+  `build-vita-cache-normal/devkit-logs/mvc2-pal-coldboot/20260831-225708/`.
+- Host runner PID 38944; target process PID `0x029f2dfb` at launch.
+
+Actual timing confirmed from the current-run section of `live-flycast.log`:
+at 00:02:985, `refresh_hz=50.0000 field_cycles=4000000 lines=625 hcount=863
+interlace=1 pal=1 ntsc=0 broadcast=1 cable=3 region=1`. The immediately
+preceding 119.6627-Hz line is a transient during consecutive register writes,
+not the final mode. Subsequent steady-scene counters advance 50 guest renders
+per emulated second. Vita output remains 60 Hz. Thus this exact US disc does
+enter a genuine 50-Hz guest video mode with the selected configuration;
+gameplay timer, animation/audio pacing and heavy-scene performance still
+require the new state and a separate comparison.
+
+Visual checks: `startup.bmp` shows the game's save-complete screen;
+`running.bmp` shows a match and Flycast's menu with Slot 8 selected. No input
+was injected by the agent. Game remains open under user control, no timed
+termination or configuration restoration is scheduled. Audio was not captured
+or evaluated. This is a successful manual launch, not a full-speed claim.
+
+The user subsequently confirmed the new state was generated. Acquired
+`_7.state` (UI Slot 8) to
+`build-vita/workloads/marvel-vs-capcom-2/pal-framedrop-slot-7/` with the
+current `manual.cfg`. Size 10,060,316 bytes; SHA256
+`9104C81F6D17A591D63F127B25E59FE8DDBB3F10FBB82808666007251948E50C`.
+Two independent target readbacks match. The old `_6.state` was also read
+back and still has SHA256
+`10F53EDAAB5DD2E5F0CB70115F7164C2EC305FDE63F57DC21CAA8959E77A4DA5`.
+The active 50-Hz session has not been terminated. A cold replay of the new
+state and its guest-RTC interval are not yet measured; do not reuse the
+slot-6 hard-coded RTC gate in `measure-mvc2.ps1` for this workload. Establish
+a separate PAL baseline and keep the old 60-Hz evidence distinct.
+
+### PAL slot-8 workload and SMC correction
+
+The new state deterministically starts at RTC 1989022267 and produces exactly
+800 guest renders over the selected 16 guest seconds. The first normal,
+non-traced discovery took 16.160 s wall time (99.01%); evidence:
+`build-vita-cache-normal/devkit-logs/mvc2-pal-discovery/20260831-230616/`.
+The SMC-off traced baseline then showed that 50 Hz alone does not fix first-use
+stutter: p50 19.317 ms, p95 25.372, p99 33.799, max 124.459 and 28 guest-frame
+intervals >=30 ms. The worst interval contained 89.48 ms of compilation wall
+scope. There were 6,942 ordinary compilations and 1,559.271 ms in their union
+over the bounded trace. Evidence:
+`build-vita/devkit-logs/mvc2-pal-trace-baseline-complete/20260831-231004/`.
+
+The first PAL cache recorded 6,758 records / 722,468 native bytes and covered
+the 2,411 unique PCs attributed to >=30 ms / >=10 ms-compile intervals. Its
+SHA256 was `3D549602F9004B1500C8F49726F9668F039F2800A522014855B071F76CFB50AC`.
+Regeneration validated 6,669 executed hits with zero failures. Two replays
+gave 15.870 / 15.881 s for 16 guest seconds, versus off values
+16.247 / 16.280. More importantly, native replay reduced max 124.459 ->
+41.528/41.604 ms, p99 33.799 -> 27.356/27.191 ms, and >=30 ms intervals
+28 -> 6/4. Forty remaining ordinary-JIT PCs cluster in frame 214; PC-only
+coverage is insufficient because cache identity also includes FPSCR and
+source-page state. Evidence:
+`build-vita/devkit-logs/mvc2-pal-native-ab/20260831-231541/`.
+
+These results demonstrate the cache mechanism and stutter cause, but are
+**superseded for release acceptance**: the user identified that every config
+had `Dynarec.smcChecks=0` (Off). MVC2 requires at least Reduced for code changes
+between fights. The interrupted PAL negative-guard run is excluded. The code
+now forces `DynarecSmcChecks>=1` for `T1212N`, while preserving an explicit
+Full setting, and all PAL configs request 1. This changes cache identity and
+requires new training, validation, A/B and a between-fight stability run.
+
+Reduced is already selective: the ARM backend sets `block_check` only when
+`RuntimeBlockInfo::read_only` is false. Protected pages use write faults and
+block invalidation with no inline SMC check. Reduced compares only the first
+four guest bytes for writable blocks; Full checks the whole block. A further
+adaptive policy cannot disable both checks and page faults before learning a
+write, because then the change is unobservable. A beta trainer should measure
+page writes and block-check failures, re-protect cold pages, retain Reduced or
+Full only for demonstrated hotspots, and key learned classifications by ROM,
+PC, FPSCR and source-page hash.
+
+The current non-MMU path has an important limitation: `rdv_BlockCheckFail`
+clears the whole JIT cache, resets the failure count and clears
+`smc_hotspots`; the >5-failure hotspot promotion only operates in the MMU
+branch. Do not claim an adaptive non-MMU policy until that behavior is changed
+and tested across fight transitions.
+
+Reduced rebuilds after the correction:
+
+- trace ELF/SHA256 `E74447BB7FC85FA596B9064568B206F92563DC2E27FA230E467402E1449AB154`,
+  SELF `FD39CA7225EB9BE7CBB9AA4CAA48E519E5E8E20E845CCBE92D1E9AB82B0BF56F`,
+  GNU build ID `496b5d459cbcb85e7761138f11f805e8accba6e5`;
+- normal ELF `FA0EF448E7ADDCF242532732390C7FE45E4C31D754414B3A7ECEA61493C628F1`,
+  SELF `D5105D2571BF3CF34EDA0A3764998FE18E917C72D8849D81C06469372363930C`,
+  GNU build ID `dee236f3c70e343844405b052bba84c3321fce18`;
+- both have adjacent `sce_sys/param.sfo` with ATTRIBUTE2=12 (SFO SHA256
+  `0106D568E3DC48228DE1A4AF779D2B4DAD9FE5DA393170ED826037A44A4038F0`).
+
+The first corrected normal baseline is 16.131 s / 16 guest seconds (99.19%),
+800 renders. The corrected traced baseline is 16.169 s (98.95%), with p50
+19.285, p95 25.291, p99 33.449, max 122.989 and 28 intervals >=30 ms. Thus
+Reduced has no measurable regression in this workload and does not itself
+remove the compilation bursts. Evidence is under
+`mvc2-pal-smc-reduced-normal-baseline/20260831-232923/` and
+`mvc2-pal-smc-reduced-trace-baseline/20260831-233037/`.
+
+### Reduced native cache completion
+
+The cache was retrained after enabling Reduced SMC. The corrected trace cache
+contains 6,758 records, 722,468 native bytes and 961 FPU variants; SHA256
+`0440E003D61D62138DBA561120DF2AAEC1628A3520F4E7C4496F2A76BA61E952`.
+Validation loaded all records and executed 6,669 hits with zero source rejects,
+zero regeneration failures, 69 used-field rejects and 140 page checks. All five
+negative guards (wrong build, truncated file, invalid native offset, changed
+source page and changed native bytes) safely fell back to ordinary JIT and
+completed the 800-render workload.
+
+Two corrected trace replays reduced max frame interval from 122.989 ms to
+41.18/41.07 ms, p99 from 33.449 to 27.32/26.98 ms and intervals >=30 ms from
+28 to 7/6. Cache-attributed compile intervals fell from 25 to 4/3. Four RAM
+invalidations were observed; neither replay had a cache validation failure.
+Evidence is under `mvc2-pal-smc-reduced-native-record/20260831-233220/`,
+`mvc2-pal-smc-reduced-native-on/20260831-233622/` and the five
+`mvc2-pal-smc-reduced-native-reject-*` directories.
+
+The normal release-style cache was separately recorded and validated: 6,758
+records / 722,468 native bytes, SHA256
+`0B123030155C5DC6A6ED3EE26F7848B014055C148F6EA9D24D6F61C44D7B39DD`,
+GNU build ID `dee236f3c70e343844405b052bba84c3321fce18`. Its alternating A/B wall
+times were 16.049/16.068 s off and 15.881/15.875 s on: mean end-to-end gain
+about 1.12%. Evidence:
+`build-vita-cache-normal/devkit-logs/mvc2-pal-smc-reduced-normal-native-ab3/20260901-101923/`.
+This retains the cache primarily for its large peak-stutter reduction, not as
+a claim that average rendering cost is solved.
+
+### `make_index` vertex-validation bypass rejected, 2026-09-01
+
+A diagnostic build counted the existing invalid-coordinate predicate without
+changing its result. Over the deterministic PAL slot-8 workload it performed
+11,619,366 vertex validations and rejected zero vertices. Exact diagnostic
+artifacts and logs are preserved under
+`build-vita-mvc2-vertex-diag/devkit-logs/mvc2-pal-make-index-diagnostic/20260901-103219/`;
+ELF SHA256 `B915A1E5FE11ADE368DCAF7E5BC8167C83A19A567DCF0ECBE13C7D995D41F7D1`.
+This establishes only that this savestate did not need the guard, not that all
+stages and transitions are free of invalid vertices.
+
+The clean control used ELF SHA256
+`C2231B963E35E3D8DB9B45579C1E47CC8712376045A3E803E22EBEA68F2AF50F`
+and measured 16.054 / 16.071 / 16.077 s (mean 16.0673 s), with the expected
+RTC and exactly 800 renders in every run. A first runtime-gated bypass enlarged
+`make_index` from 295 to 325 ARM instructions and regressed to a 16.0960-s
+mean. It was superseded by the proper specialized build, which removed the
+guard at compile time and reduced `make_index` to 209 instructions, including
+14 fewer VFP comparisons. That build measured 16.072 / 16.077 / 16.072 s
+(mean 16.0737 s), 0.04% slower than control and therefore indistinguishable
+from noise rather than a gain. Screenshots showed coherent geometry, but the
+candidate has no performance justification for accepting its correctness risk.
+
+Evidence is under
+`mvc2-pal-make-index-control/20260901-104129/`,
+`mvc2-pal-make-index-skip-validation/20260901-105021/` and
+`mvc2-pal-make-index-compile-time-skip/20260901-105659/`. The diagnostic and
+bypass source/options were reverted. Sampling rank or source-level sample
+counts must not be converted into the claimed 11.55 ms/frame or 82% instruction
+share; the on-device elimination test directly contradicts that estimate.
+
+### Page-fault adaptive SMC rejected, 2026-09-01
+
+The corrected Reduced trace contains four first-write RAM invalidations at
+`0x0c196344`, `0x0c1a4eb0`, `0x0c198324` and `0x0c12fd20`, and no inline
+block-check failure. This does not mean SMC is unnecessary: after the first
+fault the current non-MMU manager deliberately leaves each page writable, so
+later writes are guarded by per-block Reduced checks rather than new faults.
+
+A conservative candidate re-protected a written page when its first new
+single-page block was compiled, then classified the page as hot after four
+observed write faults and returned it to existing Reduced behavior. Cross-page
+blocks were excluded. The exact trace ELF SHA256 was
+`8C07AC716FC1BCF5FE2E6B980FA399E5D70829AD4247E7835161E06906E5A5F4`
+(SELF `C42C8FAD9CC9DEFFCCFE87871E4B16CE981E8BE9B8F54010A70268EFCE022AE4`),
+with adjacent ATTRIBUTE2=12 SFO.
+
+All four pages reached the hot threshold: `0x0c196000`, `0x0c1a4000` and
+`0x0c198000` did so in the first 0.9 s after trace start; `0x0c12f000` by
+5.3 s. Compared with Reduced control, invalidations rose 4 -> 16, their total
+wall scope 1.689 -> 263.415 ms and maximum 1.344 -> 106.148 ms. Guest-frame
+mean rose 20.354 -> 20.573 ms, p99 33.449 -> 34.217 ms, maximum 122.989 ->
+193.500 ms and intervals >=30 ms 28 -> 37. Frames 213 and 214 contained
+119.51 and 74.65 ms of invalidation overlap respectively. There were 7,058
+compilations versus 6,958 in control.
+
+Evidence:
+`build-vita/devkit-logs/mvc2-pal-adaptive-smc-frame-trace-long/20260901-111637/`.
+The earlier 40-s attempt did not export its trace before planned termination
+and is excluded. The source and build option were reverted. Re-protection is
+not a viable replacement for Reduced inline checks on Vita for these pages;
+the fault/permission transition itself creates larger hitches. Any future
+per-block classification must first collect exact changed-block evidence and
+cannot treat ordinary compilation or a page write as proof that every block on
+the page modifies itself.
+
+### Writable-SMC native cache v2 accepted, 2026-09-01
+
+The v1 Reduced cache deliberately omitted blocks compiled after their RAM page
+became writable. All 40 ordinary compilations left in frame 214 were on page
+`0x0c12f000`. Format v2 records those blocks with `NeedsSmcCheck`, retains the
+ordinary JIT's inline Reduced/Full check, and keys lookup by exact guest block
+bytes. Protected records retain the existing protected-page hash. Multiple
+PC/FPSCR/source-state variants can coexist; a writable record is eligible only
+while at least one covered page is actually writable, preserving the
+`read_only` specialization used by `AnalyseBlock`.
+
+That last condition was established by a failed intermediate validation. The
+first v2 selected the writable variant of `8C1A4A00` while its page was still
+protected and correctly stopped on a regeneration mismatch. Evidence:
+`build-vita/devkit-logs/mvc2-pal-smc-writable-native-v2-validate/20260901-113629/`.
+After adding the protection-class gate, the trace cache validated 6,846
+executed hits with zero failures. Its properties are:
+
+- 6,939 records / 750,396 native bytes / 988 FPU variants;
+- 181 writable-SMC records, including 59 on page `0x0c12f000`;
+- cache SHA256
+  `9FB3753293EF46E477F819BA14A697A0D24921890CCF68FBA4AED8E23DE53916`;
+- trace ELF SHA256
+  `872CA6EBCD1AD176E6E887822A190DDEF4407C0475725A2E3EC524AFBF78BC33`,
+  SELF `42E613BC4A2C8A688113DAD12C9BED697D85FF863FA10E70376C8FC6A40986A3`,
+  GNU build ID `b9bd35a45ff12c794c55c9f8dc3ec1c973160b07`.
+
+Alternating traced A/B evidence is under
+`build-vita/devkit-logs/mvc2-pal-smc-writable-native-v2b-ab/20260901-160821/`.
+The two off runs had max guest-frame intervals 123.190/124.099 ms, p99
+33.985/33.440 ms and 28/26 intervals >=30 ms. The two on runs reduced max to
+40.936/40.597 ms, p99 to 26.880/26.948 ms and both had six intervals >=30 ms.
+At frame 214, off took 102.443/101.580 ms with 436 ordinary compilations and
+76.631/75.954 ms compile overlap. On took 31.286/31.505 ms with 436/436 native
+hits, zero decode/emit and 6.646/6.682 ms cache-lookup overlap. This removes the
+40 v1 misses and improves that residual hitch by about 9.6 ms relative to v1.
+Both cache-miss-only candidate analyses returned zero PCs at the >=30-ms / >=10-ms
+compile threshold.
+
+All five v2 negative guards passed on target: wrong build, truncation, invalid
+offset, changed source hash and changed native bytes all fell back to ordinary
+JIT and completed their deterministic workload. The good cache was restored.
+Evidence is in the five `mvc2-native-v2b-reject-*` directories dated
+20260901-161724 through 20260901-162134.
+
+The separate normal build has ELF SHA256
+`FD3F1725CC1C839B5EE0C5106B600DEB0578D251E8FF64B4486EDCB4DA46012E`,
+SELF `D3585FA833B34224837FAD92E1A60CB1C8DCD0E6306E2854EA748C2ABA60861B`
+and GNU build ID `ca09a10644046d73e545c4abf0fa9fefe601ab7a`. Its adjacent SFO retains
+ATTRIBUTE2=12. The normal cache has identical coverage and SHA256
+`1116D9C0D78026563156A0CF0F1D7660D6C5DDFAA0B0691AA0BF63120B08AC97`;
+6,846 executed hits regenerated with zero failure. Three normal off runs were
+16.092/16.105/16.110 s (mean 16.1023); three on runs were
+15.874/15.874/15.867 s (mean 15.8717), a 1.43% wall-time reduction and about
+1.45% higher throughput. Evidence:
+`build-vita-cache-normal/devkit-logs/mvc2-pal-smc-writable-native-v2b-normal-ab/20260901-163242/`.
+
+A 180-second normal-cache run remained alive until planned termination. Its
+current-run log reported 6,935 hits, 44 misses, 73 source/protection-state
+rejects and zero failures; no cache-disable or error line was present. Evidence:
+`build-vita-cache-normal/devkit-logs/mvc2-pal-smc-writable-native-v2b-normal-long/20260901-163842/`.
+This is temporal stability from one savestate, not proof of between-fight or
+whole-game coverage. Reduced SMC remains enabled and no check was removed.
+
 ## Next evidence gate
 
-1. Prioritize first-use stutter. Test verified loading-time prewarming or a
-   native-code cache with relocation/identity checks against the same cold
-   slot-6 trace. Measure coverage and individual hitch durations, not only
-   average speed; do not confuse prewarming with native-code persistence.
-2. For sustained execution cost, retain the post-division profile. The vertex cluster
+1. Extend the beta trainer across played matches, stages, character teams and
+   between-fight transitions. Merge only exact build/config/PC/FPSCR/source
+   variants and repeat regeneration plus corruption guards on the aggregate.
+2. Instrument actual Reduced-SMC failures and writable-page invalidations over
+   fight transitions before implementing an adaptive policy. Do not infer hot
+   SMC blocks from ordinary JIT compilation events.
+3. For sustained execution cost, retain the post-division profile. The vertex cluster
    still needs an algorithmic/vector or data-movement improvement; merely
-   translating its small emission block to C++ lost performance. Any broader
-   HLE region must retain intermediate scheduler/interrupt checks as well as
-   complete register/memory residue and dynamic cycle accounting.
-3. Capture audio or perform a supervised listening pass before claiming that
+   translating its small emission block to C++ lost performance, and removing
+   `make_index` validation was neutral. Any broader HLE region must retain
+   intermediate scheduler/interrupt checks as well as complete register/memory
+   residue and dynamic cycle accounting.
+4. Capture audio or perform a supervised listening pass before claiming that
    game-speed improvement preserves pacing.
-4. Exercise additional heavy matches/stages; this one savestate is not a
+5. Exercise additional heavy matches/stages; this one savestate is not a
    whole-game correctness result.
-5. Re-profile every retained material change and perform final LTO-on versus
+6. Re-profile every retained material change and perform final LTO-on versus
    LTO-off A/B only after representative gameplay is full speed.

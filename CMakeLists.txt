@@ -129,6 +129,10 @@ if(VITA)
 	enable_language(ASM)
 
 	add_executable(${PROJECT_NAME} core/emulator.cpp)
+	target_link_options(${PROJECT_NAME} PRIVATE
+		"-Wl,--build-id=sha1,-T,${CMAKE_CURRENT_SOURCE_DIR}/cmake/vita-native-build-id.ld")
+	set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS
+		"${CMAKE_CURRENT_SOURCE_DIR}/cmake/vita-native-build-id.ld")
 	if(VITA_FRAME_TRACE)
 		target_sources(${PROJECT_NAME} PRIVATE core/oslib/frame_trace.cpp)
 		target_compile_definitions(${PROJECT_NAME} PRIVATE VITA_FRAME_TRACE)
