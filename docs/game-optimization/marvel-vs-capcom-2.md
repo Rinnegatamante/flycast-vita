@@ -1563,6 +1563,53 @@ Its collector boots the exact ROM, uses PAL/50 Hz settings, retains Reduced SMC
 checks and checkpoints every 120 seconds. This is a data-collection beta, not a
 claim of whole-game coverage or full speed.
 
+### Collector capacity saturation and beta 2 boot regression, 2026-09-02
+
+A live read-only pull from the first tester build found a valid cache at the
+hard 12,000-record limit: 1,293,648 native bytes, 1,296,300-byte extent, zero
+duplicate source variants and build ID
+`418e00f3c262e3e5e01483381db0049fa316c4a5`. The run loaded all 12,000 records
+and continued to report new misses, so the lack of file growth was capacity
+saturation rather than a disabled collector. A poll-state bug also repeated
+the final report after saturation; the corrected condition reports once after
+recording stops.
+
+The first beta 2 raised the persistent limits to 100,000 records / 10 MiB and
+the static SH4 JIT cache from 10 to 16 MiB. Its ELF RX load grew from
+23,249,856 to 29,541,628 bytes and its collector reserved about 19.6 MiB at game
+startup. A tester reported an immediate application-boot crash. No crash XML or
+core dump was supplied, so the exact failing loader/allocation call is not yet
+proven; however, an app-level boot failure precedes MVC2 cache initialization
+and makes the 6 MiB executable-segment increase the attributable regression.
+That build (GNU build ID `80c83ece95a7a3b7aba1152e6648b2e15b0291a0`) is
+withdrawn.
+
+Hotfix 1 restores the boot-stable 10 MiB static JIT cache while retaining the
+100,000-record / 10 MiB collector ceiling. Record/native backing storage now
+starts at the beta 1 reservations (12,000 records / 2 MiB) and grows in bounded
+chunks; allocation exceptions stop collection and preserve ordinary JIT
+execution instead of escaping. Its RX load is 23,251,004 bytes, only 1,148
+bytes above beta 1. Host format checks pass, the Vita Release build completes,
+and the adjacent SFO retains ATTRIBUTE2=12. Build ID is
+`509dd199dd75ccf5b3bd0dfe0b5d0956dab13a09`; ELF SHA256 is
+`B4E92EBF60233557D3B9C7018DEFFA43F6ECCD70BF0D7FEF32EAF712C9DB3F28`,
+SELF `B4E9EFC51BD736B361E463A8EE22F85B95148FFE45C6CBEE80C7BD80F55E0A9B`
+and VPK `89D3C15D5C1C8CD1D400246A577CE1BBEF3DDA373F8C71D963E01F9D824D5003`.
+The archive is
+`build-vita-cache-normal/mvc2-beta-collector-beta2-hotfix1.zip`, SHA256
+`6FA1CDE74F783008AF11F5599CAD82CB92402D5667EDCE0643487AB374C2C04E`.
+It still requires a target boot test; the local DevKit was left untouched
+because another application was running.
+
+Memory specialization has concrete later candidates. MVC2 uses the Dreamcast
+2 MiB ARAM configuration, while the generic ARM7 entry-point table is sized
+for 8 MiB and occupies 8 MiB of BSS; specializing it can recover 6 MiB. The
+ARM7 JIT code area occupies another 4 MiB of executable memory and may be
+reduced only after recording its high-water mark, because an undersized cache
+can regress or break audio. UI, networking/GGPO, Naomi paths, box-art and
+texture upscalers are further standalone candidates. None are part of the boot
+hotfix until measured.
+
 ## Next evidence gate
 
 1. Distribute the beta collector across played matches, stages, character teams
