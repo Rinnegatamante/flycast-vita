@@ -2,6 +2,8 @@
 #ifdef __vita__
 extern "C" const unsigned char mvc2_native_build_id[];
 namespace mvc2_native {
+static_assert(MaxNativeBytes + MaxBlockBytes < CODE_SIZE,
+    "persistent native cache must leave runtime JIT headroom");
 static Header identity;
 static std::vector<Record> loaded, learned;
 static std::vector<u8> loadedCode, learnedCode, consumed;
@@ -305,6 +307,11 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
     const size_t nativeBytes = loadedCode.size() + learnedCode.size();
     if (recordCount >= MaxRecords || nativeBytes >= MaxNativeBytes
             || block->host_code_size > MaxNativeBytes - nativeBytes) {
+        if (!saturated) {
+            WARN_LOG(DYNAREC, "mvc2-native: collector saturated records=%u/%u bytes=%u/%u next=%u",
+                (u32)recordCount, MaxRecords, (u32)nativeBytes, MaxNativeBytes,
+                block->host_code_size);
+        }
         ++saturated;
         return;
     }
@@ -445,12 +452,12 @@ void mvc2NativeCachePoll()
         return;
     }
 #endif
-    if (!initialized || (reported && !merging) || (!enabled && !recording && !validationFailures)
+    if (!initialized || (reported && !recording) || (!enabled && !recording && !validationFailures)
             || sceKernelGetProcessTimeWide() < deadline)
         return;
-    NOTICE_LOG(DYNAREC, "mvc2-native: report hits=%u misses=%u source_reject=%u used_reject=%u duplicate_skip=%u validated=%u failures=%u page_checks=%u",
+    NOTICE_LOG(DYNAREC, "mvc2-native: report hits=%u misses=%u source_reject=%u used_reject=%u duplicate_skip=%u saturated=%u validated=%u failures=%u page_checks=%u",
         hits, misses, sourceRejects, usedRejects, duplicateSkips,
-        validated, validationFailures, pageChecks);
+        saturated, validated, validationFailures, pageChecks);
     if (recording) {
         const bool identityValid = _vmem_native_mapping_generation() == mapGeneration
             && configHash() == identity.configHash;

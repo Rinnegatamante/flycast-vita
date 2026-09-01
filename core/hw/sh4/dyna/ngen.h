@@ -44,7 +44,8 @@
 #include "blockmanager.h"
 #include "oslib/host_context.h"
 
-#define CODE_SIZE   (10*1024*1024)
+// Leave runtime headroom after loading MVC2's persistent native cache.
+#define CODE_SIZE   (16*1024*1024)
 #define TEMP_CODE_SIZE (1024*1024)
 
 // When NO_RWX is enabled there's two address-spaces, one executable and

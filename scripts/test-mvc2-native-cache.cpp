@@ -12,19 +12,19 @@
 #include <vector>
 #include <set>
 using namespace mvc2_native;
-static constexpr uint32_t Capacity = 10 * 1024 * 1024, RamMask = 0xffffff;
+static constexpr uint32_t Capacity = 16 * 1024 * 1024, RamMask = 0xffffff;
 static uint64_t hashHeader(Header header) {
     header.headerHash = 0;
     return XXH64(&header, sizeof(header), 0);
 }
 static void selfTest() {
     std::set<uint32_t> hashes;
-    for (uint32_t n = 0; n < 12000; ++n) {
+    for (uint32_t n = 0; n < MaxRecords; ++n) {
         uint64_t key = blockKey(0x8c010000 + 2 * n, 0x00040001);
         assert(uint32_t(key) == 0x00040001); // Regression: old 32-bit std::hash.
         hashes.insert(hashKey32(key));
     }
-    assert(hashes.size() == 12000);
+    assert(hashes.size() == MaxRecords);
     Record base{};
     base.offset = 4096; base.size = 128; base.guestPc = 0x8c010000;
     base.guestBytes = 16; base.cycles = 8; base.guestOps = 8;

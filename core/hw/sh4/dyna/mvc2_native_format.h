@@ -5,8 +5,8 @@
 // Same executable/ABI only. No C++ pointers, containers or object images on disk.
 namespace mvc2_native {
 constexpr uint32_t Version = 2;
-constexpr uint32_t MaxRecords = 12000;
-constexpr uint32_t MaxNativeBytes = 2 * 1024 * 1024;
+constexpr uint32_t MaxRecords = 100000;
+constexpr uint32_t MaxNativeBytes = 10 * 1024 * 1024;
 constexpr uint32_t MaxBlockBytes = 16 * 1024;
 constexpr uint32_t MaxPages = 4;
 constexpr uint32_t HasFpuOp = 1u;
