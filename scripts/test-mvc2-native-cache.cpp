@@ -12,7 +12,7 @@
 #include <vector>
 #include <set>
 using namespace mvc2_native;
-static constexpr uint32_t Capacity = 16 * 1024 * 1024, RamMask = 0xffffff;
+static constexpr uint32_t Capacity = 10 * 1024 * 1024, RamMask = 0xffffff;
 static uint64_t hashHeader(Header header) {
     header.headerHash = 0;
     return XXH64(&header, sizeof(header), 0);

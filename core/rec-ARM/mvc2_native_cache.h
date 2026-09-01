@@ -2,8 +2,8 @@
 #ifdef __vita__
 extern "C" const unsigned char mvc2_native_build_id[];
 namespace mvc2_native {
-static_assert(MaxNativeBytes + MaxBlockBytes < CODE_SIZE,
-    "persistent native cache must leave runtime JIT headroom");
+static_assert(MaxNativeBytes <= CODE_SIZE,
+    "persistent native cache cannot exceed the JIT code cache");
 static Header identity;
 static std::vector<Record> loaded, learned;
 static std::vector<u8> loadedCode, learnedCode, consumed;
@@ -25,6 +25,39 @@ static bool testResetDone, testResetPending;
 static u64 started, deadline;
 static u32 checkpointSeconds;
 static std::string path;
+static constexpr size_t RecordReserveChunk = 12000;
+static constexpr size_t NativeReserveChunk = 2 * 1024 * 1024;
+
+static bool reserveLearnedCapacity(size_t nextNativeBytes, bool initial)
+{
+    const size_t recordLimit = MaxRecords - loaded.size();
+    const size_t nativeLimit = MaxNativeBytes - loadedCode.size();
+    const size_t nativeNeeded = learnedCode.size() + nextNativeBytes;
+    try {
+        if (initial || learned.size() == learned.capacity()) {
+            const size_t target = initial
+                ? std::min(recordLimit, RecordReserveChunk)
+                : std::min(recordLimit, learned.capacity() + RecordReserveChunk);
+            if (target > learned.capacity())
+                learned.reserve(target);
+        }
+        if (initial || nativeNeeded > learnedCode.capacity()) {
+            const size_t target = initial
+                ? std::min(nativeLimit, NativeReserveChunk)
+                : std::min(nativeLimit, std::max(nativeNeeded,
+                    learnedCode.capacity() + NativeReserveChunk));
+            if (target > learnedCode.capacity())
+                learnedCode.reserve(target);
+        }
+    } catch (...) {
+        saturated = 1;
+        WARN_LOG(DYNAREC, "mvc2-native: collector memory reservation failed records=%u/%u bytes=%u/%u",
+            (u32)(loaded.size() + learned.size()), MaxRecords,
+            (u32)(loadedCode.size() + learnedCode.size()), MaxNativeBytes);
+        return false;
+    }
+    return learned.size() < recordLimit && nativeNeeded <= nativeLimit;
+}
 
 static u64 configHash()
 {
@@ -275,14 +308,16 @@ void mvc2NativeCacheBegin()
     // and appends only runtime misses at later native offsets.
     if (merging) {
         enabled = readCache();
-        learned.reserve(MaxRecords - loaded.size());
-        learnedCode.reserve(MaxNativeBytes - loadedCode.size());
-        NOTICE_LOG(DYNAREC, "mvc2-native: incremental recording base=%u bytes=%u origin=%llu",
-            (unsigned)loaded.size(), (unsigned)loadedCode.size(), (unsigned long long)started);
+        if (!reserveLearnedCapacity(0, true))
+            recording = merging = false;
+        if (recording)
+            NOTICE_LOG(DYNAREC, "mvc2-native: incremental recording base=%u bytes=%u origin=%llu",
+                (unsigned)loaded.size(), (unsigned)loadedCode.size(), (unsigned long long)started);
     } else if (recording) {
-        learned.reserve(MaxRecords);
-        learnedCode.reserve(MaxNativeBytes);
-        NOTICE_LOG(DYNAREC, "mvc2-native: recording cold blocks, origin=%llu", (unsigned long long)started);
+        if (!reserveLearnedCapacity(0, true))
+            recording = false;
+        if (recording)
+            NOTICE_LOG(DYNAREC, "mvc2-native: recording cold blocks, origin=%llu", (unsigned long long)started);
     } else if (load) {
         enabled = readCache();
     }
@@ -295,7 +330,7 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
         validationFlagsCondition = flagsCondition;
         return;
     }
-    if (!recording || block->temp_block
+    if (!recording || saturated || block->temp_block
             || block->blockcheck_failures || excludedPc(block->vaddr))
         return;
     if (_vmem_native_mapping_generation() != mapGeneration) {
@@ -312,7 +347,7 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
                 (u32)recordCount, MaxRecords, (u32)nativeBytes, MaxNativeBytes,
                 block->host_code_size);
         }
-        ++saturated;
+        saturated = 1;
         return;
     }
     Record entry{};
@@ -361,6 +396,8 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
             return;
         }
     }
+    if (!reserveLearnedCapacity(entry.size, false))
+        return;
     learned.push_back(entry);
     const u8* code = (const u8*)block->code;
     learnedCode.insert(learnedCode.end(), code, code + entry.size); // Before linking/fastmem rewrites.
