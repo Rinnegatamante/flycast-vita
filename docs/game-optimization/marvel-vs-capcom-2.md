@@ -1725,20 +1725,56 @@ That shard has SHA256
 The measurement harness now refuses to pull a stale native artifact when a
 run ends before its first successful checkpoint.
 
-The LTO-off Release has ELF SHA256
-`1D7F113BC0CE9EC2406BAE060025EFB44D777E7E4530FF708824F659B10AB7A5`,
+An unrestricted 2 ms portable poll during the captured fight was rejected.
+Three paired runs under
+`build-vita-cache-normal/devkit-logs/mvc2-portable-2ms-ab3/20260915-114050/`
+measured JIT at 16.053/16.047/16.047 wall seconds and portable prewarm at
+16.232/16.231/16.228 seconds for the same 16 guest seconds and 800 renders.
+The mean wall-time cost was 1.13%, so the beta never prewarms unconditionally.
+
+The retained scheduler measures guest render submissions once per emulated
+second. It permits a 2,000 us soft prewarm budget only below 46 renders and
+defers it during the stable PAL fight cadence of 50. The savestate A/B under
+`mvc2-portable-transition-gate-ab3/20260915-172816/` executed no portable
+compilation during any measured fight. Pair 1 differed by 22 ms and pair 3 by
+6 ms. Pair 2 contained an unrelated 3.305-second pause between consecutive
+guest-second markers and no cache event, so those three runs do not support a
+throughput improvement claim. They do show that this visible residual stall
+was not caused by portable prewarm.
+
+The 90-second cold-boot run under
+`mvc2-portable-transition-coldboot/20260915-173531/` exercised both scheduler
+paths. Six eligible intervals at 8/29/28/37/25/34 guest renders compiled 56
+blocks and found 406 blocks already present; the maximum logged poll was 2,128
+us. Stable 50-render intervals emitted the deferred marker and did not compile.
+The render threshold is still a heuristic: a future phase detector must avoid
+mistaking an unusually low-render gameplay interval for a loading transition.
+
+MVC2 US v1.001 is also forced to the original 4:3 presentation after all
+global/per-game settings are loaded. This disables normal widescreen,
+super-widescreen, the MVC2 game-memory widescreen cheat and restores screen
+stretching to 100. The target test deliberately supplied an old configuration
+with the game hack enabled; the log still reported `Forcing 4:3 presentation`
+and the screenshot showed pillarboxed 4:3. The final committed-build smoke is
+under `mvc2-c0b16ce9-4x3-smoke/20260915-174754/` and completed the expected 800
+renders over 16 guest seconds.
+
+The LTO-off Release built from source commit `c0b16ce9a` has GNU build ID
+`a68dbbd5a9185e342f0c49c38b1408858873a7a6`, ELF SHA256
+`67080DB040B1EF5BCF02AC23568910AF29AF20884BFB14C5A4EB76786DDF5E4C`,
 SELF SHA256
-`4185646C6827131B8D77B54E8ECF3335B8175BAE295C0510F4B94C53D7CD474C`
+`0A555BB98E3F5014D1379FAF9A12FC05CDF5F28AB0C0962A9A565CE0F051128B`
 and VPK SHA256
-`8F00A2493DA21CAC80959973DC6B1631A1BCAE13C44B3FB878F17E06539D3C93`.
-The adjacent SFO still has ATTRIBUTE2=12 and SHA256
+`58969EF7FA62DFB377D405A71DF2E1BF47DC5E7D49508DEA5CAFF0B90802CAB1`.
+The adjacent SFO has ATTRIBUTE2=12 and SHA256
 `0106D568E3DC48228DE1A4AF779D2B4DAD9FE5DA393170ED826037A44A4038F0`.
-The reproducible tester archive is
-`build-vita-cache-normal/mvc2-beta-collector-beta3-portable1.zip`, SHA256
-`61B327F2C2894428608A3D0EA26B2A3AD20B3F586E8DF0D04E67EF37AE9F0192`.
-It includes the VPK, loose SELF plus adjacent `sce_sys/param.sfo`, collector
-configuration, portable coverage and tester instructions. It is a collection
-beta, not a whole-game full-speed claim.
+The distributable tester archive is
+`build-vita-cache-normal/mvc2-beta-collector-beta3-portable3.zip`, SHA256
+`80BA9FF8CCB27AE5E53128FD114EB74E6006514D03AAD1390EECB36EB7B63CB6`.
+It includes the VPK, loose SELF plus adjacent `sce_sys/param.sfo`, 4:3 collector
+configuration, portable coverage and tester instructions. Earlier
+`beta3-portable1/2` archives are superseded. This remains a collection beta,
+not a whole-game full-speed claim.
 
 ## Next evidence gate
 
@@ -1749,9 +1785,9 @@ beta, not a whole-game full-speed claim.
    file is canonical. Use `--output` only when deliberately producing a
    disposable native pack from shards with one exact native identity.
 2. Add compile cost and phase/first-use priority to portable coverage, then
-   schedule newly resident stage/character blocks during loading transitions.
-   Measure maximum poll overrun and fight-frame latency with the existing
-   savestate before increasing the 2 ms beta budget.
+   replace or reinforce the render-cadence heuristic with an explicit safe
+   MvC2 loading/transition signal. Do not increase the 2 ms beta budget until
+   low-render gameplay intervals are proven not to be false positives.
 3. Instrument actual Reduced-SMC failures and writable-page invalidations over
    fight transitions before implementing an adaptive policy. Do not infer hot
    SMC blocks from ordinary JIT compilation events.
