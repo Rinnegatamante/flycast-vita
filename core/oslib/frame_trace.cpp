@@ -40,7 +40,7 @@ void init()
     if (!cfgLoadBool("perf", "FrameTrace", false) || !config::ThreadedRendering)
         return;
     currentLane = Render;
-    streams[Emu].events.resize(65536);
+    streams[Emu].events.resize(81920);
     streams[Render].events.resize(131072);
     int seconds = std::max(5, std::min(120, cfgLoadInt("perf", "FrameTraceSeconds", 30)));
     origin = sceKernelGetProcessTimeWide();

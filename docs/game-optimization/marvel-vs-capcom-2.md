@@ -1776,6 +1776,38 @@ configuration, portable coverage and tester instructions. Earlier
 `beta3-portable1/2` archives are superseded. This remains a collection beta,
 not a whole-game full-speed claim.
 
+### Initial portable prewarm and FPSCR staging, 2026-09-15
+
+The savestate trace showed that compiling only the portable records matching
+the initial FPSCR left later FPU-mode changes exposed to runtime JIT bursts.
+The initial prewarm can now emit blocks from other FPSCR modes without
+publishing them in Flycast's single-entry-per-PC block map. These blocks are
+keyed by `(guest PC, FPSCR)`, and are published only on an exact lookup after
+rechecking current guest source bytes, page-protection class and `SR.FD`.
+Read-only staged blocks are reattached to the normal page invalidation lists
+before publication. Cache/reset teardown owns and deletes every staged block.
+
+The expanded 16,304-record portable coverage file has SHA256
+`3EF59B79B4D4FBE142D6DF6A4C7E62164B27EE1C06BDC06CFB2984A5ECB88BE8`.
+With a four-second initial budget, the target scanned the full file in
+3.035 seconds: 12,039 current-mode blocks and 2,221 mode-independent blocks
+were compiled, and 666 mode-sensitive blocks were staged. The 25-second trace
+under `mvc2-fpscr-staged-fullscan25/20260915-230246/` used 330 staged blocks,
+rejected 18 whose runtime source/protection no longer matched, and reported no
+event overflow. Runtime compile wall time fell from the earlier 166.465 ms to
+69.244 ms. The frame-306 JIT burst fell from 40.688 ms to 0.931 ms; frame 214
+still compiled 40 blocks for 10.515 ms because its writable code overlay was
+not resident when initial prewarm ran.
+
+This experiment is not enabled by the beta-3 configuration. A separate
+no-trace target run under
+`mvc2-fpscr-staged-notrace/20260915-230824/` completed the same 16 guest
+seconds and 800 renders in 16.501 wall seconds (`0.96964x`). That single run is
+slower than the earlier non-staged observation and therefore does not justify
+shipping initial staging yet. The remaining static-prewarm limitation is
+concrete: portable v1 stores source fingerprints but not the SH4 bytes needed
+to compile an overlay before the game generates it.
+
 ## Next evidence gate
 
 1. Distribute beta 3 across played matches, stages, character teams and
@@ -1784,22 +1816,27 @@ not a whole-game full-speed claim.
    executables, with `mvc2-aot-pack --coverage-output`; the portable coverage
    file is canonical. Use `--output` only when deliberately producing a
    disposable native pack from shards with one exact native identity.
-2. Add compile cost and phase/first-use priority to portable coverage, then
+2. Extend portable coverage with bounded exact SH4 source bytes for writable
+   overlays. Compile them against a temporary, restored guest-memory view and
+   keep the result staged until the exact source/protection state appears.
+   This remains executable-independent; never serialize host code or host
+   addresses into the canonical cache.
+3. Add compile cost and phase/first-use priority to portable coverage, then
    replace or reinforce the render-cadence heuristic with an explicit safe
    MvC2 loading/transition signal. Do not increase the 2 ms beta budget until
    low-render gameplay intervals are proven not to be false positives.
-3. Instrument actual Reduced-SMC failures and writable-page invalidations over
+4. Instrument actual Reduced-SMC failures and writable-page invalidations over
    fight transitions before implementing an adaptive policy. Do not infer hot
    SMC blocks from ordinary JIT compilation events.
-4. For sustained execution cost, retain the post-division profile. The vertex cluster
+5. For sustained execution cost, retain the post-division profile. The vertex cluster
    still needs an algorithmic/vector or data-movement improvement; merely
    translating its small emission block to C++ lost performance, and removing
    `make_index` validation was neutral. Any broader HLE region must retain
    intermediate scheduler/interrupt checks as well as complete register/memory
    residue and dynamic cycle accounting.
-5. Capture audio or perform a supervised listening pass before claiming that
+6. Capture audio or perform a supervised listening pass before claiming that
    game-speed improvement preserves pacing.
-6. Exercise additional heavy matches/stages; this one savestate is not a
+7. Exercise additional heavy matches/stages; this one savestate is not a
    whole-game correctness result.
-7. Re-profile every retained material change and perform final LTO-on versus
+8. Re-profile every retained material change and perform final LTO-on versus
    LTO-off A/B only after representative gameplay is full speed.

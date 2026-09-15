@@ -8,21 +8,27 @@ enum class Mvc2PortableWarmResult : u32 {
     Existing,
     NoSpace,
     DecodeFailed,
+    Staged,
 };
 void mvc2NativeCacheBegin();
 void mvc2NativeCacheReset();
 void mvc2NativeCachePoll();
+void mvc2NativeCachePrewarmInitial();
 void mvc2NativeCacheInvalidatePage(u32 guestAddress);
 bool mvc2NativeCacheWantsRelocations();
 void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCondition,
                            const mvc2_native::Relocation* relocations, u32 relocationCount);
 RuntimeBlockInfo* mvc2NativeCacheLookup(u32 guestPc, u32 fpuMode);
 bool rdv_ValidateNativeBlock(const mvc2_native::Record& record);
-Mvc2PortableWarmResult rdv_PrewarmPortableBlock(u32 guestPc, u32 fpuMode);
+void mvc2NativeCacheStagePortableBlock(RuntimeBlockInfo* block,
+                                       const mvc2_native::PortableRecord& source);
+Mvc2PortableWarmResult rdv_PrewarmPortableBlock(
+    const mvc2_native::PortableRecord& source, bool stageFpuBlock = false);
 #else
 inline void mvc2NativeCacheBegin() {}
 inline void mvc2NativeCacheReset() {}
 inline void mvc2NativeCachePoll() {}
+inline void mvc2NativeCachePrewarmInitial() {}
 inline void mvc2NativeCacheInvalidatePage(u32) {}
 inline bool mvc2NativeCacheWantsRelocations() { return false; }
 inline void mvc2NativeCacheRecord(RuntimeBlockInfo*, int, int,

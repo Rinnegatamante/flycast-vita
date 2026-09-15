@@ -194,6 +194,20 @@ void bm_AddBlock(RuntimeBlockInfo* blk)
 
 }
 
+void bm_AttachBlockProtection(RuntimeBlockInfo* block)
+{
+	if (!block->read_only)
+		return;
+	for (u32 addr = block->addr & ~PAGE_MASK;
+			addr < block->addr + block->sh4_code_size; addr += PAGE_SIZE)
+	{
+		auto& block_list = blocks_per_page[(addr & RAM_MASK) / PAGE_SIZE];
+		if (block_list.empty())
+			bm_LockPage(addr);
+		block_list.insert(block);
+	}
+}
+
 void bm_DiscardBlock(RuntimeBlockInfo* block)
 {
 	// Remove from block map

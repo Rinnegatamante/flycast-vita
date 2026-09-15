@@ -83,6 +83,7 @@ RuntimeBlockInfoPtr bm_GetStaleBlock(void* dynarec_code);
 RuntimeBlockInfoPtr DYNACALL bm_GetBlock(u32 addr);
 
 void bm_AddBlock(RuntimeBlockInfo* blk);
+void bm_AttachBlockProtection(RuntimeBlockInfo* blk);
 void bm_DiscardBlock(RuntimeBlockInfo* block);
 void bm_Reset();
 void bm_ResetCache();

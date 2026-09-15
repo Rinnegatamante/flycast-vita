@@ -13,7 +13,12 @@ static std::vector<u8> portableDone;
 struct KeyHash {
     size_t operator()(u64 key) const { return hashKey32(key); }
 };
+struct StagedPortableBlock {
+    RuntimeBlockInfo* block;
+    PortableRecord source;
+};
 static std::unordered_multimap<u64, size_t, KeyHash> blockIndex;
+static std::unordered_multimap<u64, StagedPortableBlock, KeyHash> stagedPortableBlocks;
 static bool initialized, enabled, recording, merging, validating, validateHits, reported;
 static u32 mapGeneration, hits, misses, sourceRejects, usedRejects, duplicateSkips;
 static u32 validated, validationFailures, saturated;
@@ -23,10 +28,10 @@ static bool protectedPageVerified[4096];
 static u32 pageChecks;
 static bool portableEnabled;
 static size_t portableCursor;
-static u32 portableBudgetUs, portableMaxRenders, portablePolls;
+static u32 portableBudgetUs, portableInitialBudgetUs, portableMaxRenders, portablePolls;
 static u32 portableCompiled, portableExisting, portableLastRenderCount;
-static bool portableRenderBaseline;
-static u32 portableRejected;
+static bool portableRenderBaseline, portableInitialWarmDone;
+static u32 portableRejected, portableStaged, portableStagedHits, portableStagedRejects;
 static u64 portablePageHash[4096];
 static u32 portablePageEpoch[4096], portableEpoch;
 #ifdef VITA_FRAME_TRACE
@@ -160,6 +165,28 @@ static bool portableSourceMatches(const PortableRecord& entry)
     }
     return true;
 }
+static bool portableSourceMatchesNow(const PortableRecord& entry)
+{
+    const u32 guestOffset = entry.guestPc & RAM_MASK;
+    if (entry.flags & PortableExactSourceHash)
+        return XXH64(mem_b.data + guestOffset, entry.guestBytes, 0) == entry.sourceHash;
+    u32 pageOffset = guestOffset & ~4095u;
+    for (u32 page = 0; page < entry.pageCount; ++page, pageOffset += 4096) {
+        if (!bm_IsRamPageProtected(pageOffset)
+                || XXH64(mem_b.data + pageOffset, 4096, 0) != entry.pageHash[page])
+            return false;
+    }
+    return true;
+}
+static bool portableProtectionMatches(const RuntimeBlockInfo* block)
+{
+    bool readOnly = (block->addr & 0x1fff0000) != 0x0c000000;
+    for (u32 address = block->addr & ~4095u;
+            readOnly && address < block->addr + block->sh4_code_size;
+            address += 4096)
+        readOnly = bm_IsRamPageProtected(address);
+    return block->read_only == readOnly;
+}
 static bool readPortableCoverage()
 {
     const std::string portablePath = get_writable_data_path("mvc2_portable_cache.bin");
@@ -208,11 +235,69 @@ static bool readPortableCoverage()
         WARN_LOG(DYNAREC, "mvc2-portable: state allocation failed; ordinary JIT");
         return false;
     }
-    NOTICE_LOG(DYNAREC, "mvc2-portable: loaded=%u bytes=%u build_independent=1 budget_us=%u max_renders=%u",
+    NOTICE_LOG(DYNAREC, "mvc2-portable: loaded=%u bytes=%u build_independent=1 budget_us=%u initial_budget_us=%u max_renders=%u",
         (u32)portableRecords.size(),
         (u32)(sizeof(PortableHeader) + portableRecords.size() * sizeof(PortableRecord)),
-        portableBudgetUs, portableMaxRenders);
+        portableBudgetUs, portableInitialBudgetUs, portableMaxRenders);
     return !portableRecords.empty();
+}
+struct PortableWarmStats {
+    u32 scanned, unavailable, matched, compiled, existing, rejected, staged;
+    u64 elapsedUs;
+};
+static PortableWarmStats prewarmPortableCoverageBudget(u32 budgetUs,
+                                                        bool modeIndependent)
+{
+    PortableWarmStats stats{};
+    if (!portableEnabled || portableRecords.empty() || !budgetUs)
+        return stats;
+    const u64 start = sceKernelGetProcessTimeWide();
+    const size_t count = portableRecords.size();
+    ++portableEpoch;
+    if (!portableEpoch) {
+        memset(portablePageEpoch, 0, sizeof(portablePageEpoch));
+        portableEpoch = 1;
+    }
+    while (stats.scanned < count) {
+        if (sceKernelGetProcessTimeWide() - start >= budgetUs)
+            break;
+        const size_t index = portableCursor;
+        portableCursor = (portableCursor + 1) % count;
+        ++stats.scanned;
+        if (portableDone[index])
+            continue;
+        const PortableRecord& record = portableRecords[index];
+        const bool currentMode = record.fpuMode == fpscr.full;
+        if ((!currentMode && !modeIndependent) || !portableSourceMatches(record)) {
+            ++stats.unavailable;
+        } else {
+            ++stats.matched;
+            const Mvc2PortableWarmResult result =
+                rdv_PrewarmPortableBlock(record,
+                                         modeIndependent && !currentMode);
+            if (result == Mvc2PortableWarmResult::NoSpace) {
+                portableEnabled = false;
+                WARN_LOG(DYNAREC, "mvc2-portable: prewarm stopped; JIT cache has no safe reserve");
+                break;
+            }
+            portableDone[index] = 1;
+            if (result == Mvc2PortableWarmResult::Compiled) {
+                ++stats.compiled;
+                ++portableCompiled;
+            } else if (result == Mvc2PortableWarmResult::Existing) {
+                ++stats.existing;
+                ++portableExisting;
+            } else if (result == Mvc2PortableWarmResult::Staged) {
+                ++stats.staged;
+                ++portableStaged;
+            } else {
+                ++stats.rejected;
+                ++portableRejected;
+            }
+        }
+    }
+    stats.elapsedUs = sceKernelGetProcessTimeWide() - start;
+    return stats;
 }
 static void prewarmPortableCoverage()
 {
@@ -229,56 +314,20 @@ static void prewarmPortableCoverage()
     ++portablePolls;
     if (portableMaxRenders && renderDelta > portableMaxRenders) {
         if (portablePolls % 30 == 0)
-            NOTICE_LOG(DYNAREC, "mvc2-portable: active interval renders=%u; prewarm deferred total=%u/%u",
-                renderDelta, portableCompiled + portableExisting, (u32)portableRecords.size());
+            NOTICE_LOG(DYNAREC, "mvc2-portable: active interval renders=%u; prewarm deferred prepared=%u/%u staged_live=%u staged_hits=%u staged_rejects=%u",
+                renderDelta, portableCompiled + portableExisting + portableStaged,
+                (u32)portableRecords.size(), (u32)stagedPortableBlocks.size(),
+                portableStagedHits, portableStagedRejects);
         return;
     }
-    const u64 start = sceKernelGetProcessTimeWide();
-    const size_t count = portableRecords.size();
-    u32 scanned = 0, unavailable = 0, matched = 0, compiled = 0, existing = 0, rejected = 0;
-    ++portableEpoch;
-    if (!portableEpoch) {
-        memset(portablePageEpoch, 0, sizeof(portablePageEpoch));
-        portableEpoch = 1;
-    }
-    while (scanned < count) {
-        if (sceKernelGetProcessTimeWide() - start >= portableBudgetUs)
-            break;
-        const size_t index = portableCursor;
-        portableCursor = (portableCursor + 1) % count;
-        ++scanned;
-        if (portableDone[index])
-            continue;
-        const PortableRecord& record = portableRecords[index];
-        if (record.fpuMode != fpscr.full || !portableSourceMatches(record)) {
-            ++unavailable;
-        } else {
-            ++matched;
-            const Mvc2PortableWarmResult result =
-                rdv_PrewarmPortableBlock(record.guestPc, record.fpuMode);
-            if (result == Mvc2PortableWarmResult::NoSpace) {
-                portableEnabled = false;
-                WARN_LOG(DYNAREC, "mvc2-portable: prewarm stopped; JIT cache has no safe reserve");
-                break;
-            }
-            portableDone[index] = 1;
-            if (result == Mvc2PortableWarmResult::Compiled) {
-                ++compiled;
-                ++portableCompiled;
-            } else if (result == Mvc2PortableWarmResult::Existing) {
-                ++existing;
-                ++portableExisting;
-            } else {
-                ++rejected;
-                ++portableRejected;
-            }
-        }
-    }
-    if (compiled || rejected || portablePolls % 30 == 0) {
-        NOTICE_LOG(DYNAREC, "mvc2-portable: prewarm renders=%u scanned=%u unavailable=%u matched=%u compiled=%u existing=%u rejected=%u total=%u/%u elapsed_us=%llu",
-            renderDelta, scanned, unavailable, matched, compiled, existing, rejected,
-            portableCompiled + portableExisting, (u32)count,
-            (unsigned long long)(sceKernelGetProcessTimeWide() - start));
+    const PortableWarmStats stats = prewarmPortableCoverageBudget(portableBudgetUs, false);
+    if (stats.compiled || stats.rejected || portablePolls % 30 == 0) {
+        NOTICE_LOG(DYNAREC, "mvc2-portable: prewarm renders=%u scanned=%u unavailable=%u matched=%u compiled=%u existing=%u staged=%u rejected=%u total=%u/%u elapsed_us=%llu",
+            renderDelta, stats.scanned, stats.unavailable, stats.matched,
+            stats.compiled, stats.existing, stats.staged, stats.rejected,
+            portableCompiled + portableExisting + portableStaged,
+            (u32)portableRecords.size(),
+            (unsigned long long)stats.elapsedUs);
     }
 }
 static bool readCache()
@@ -463,13 +512,18 @@ static bool saveCache(bool keepLearned)
 void mvc2NativeCacheReset()
 {
     using namespace mvc2_native;
+    for (auto& entry : stagedPortableBlocks) {
+        entry.second.block->Discard();
+        delete entry.second.block;
+    }
+    stagedPortableBlocks.clear();
     initialized = enabled = recording = merging = validating = reported = false;
     portableEnabled = false;
     portableCursor = 0;
-    portableBudgetUs = portableMaxRenders = portablePolls = 0;
+    portableBudgetUs = portableInitialBudgetUs = portableMaxRenders = portablePolls = 0;
     portableCompiled = portableExisting = portableLastRenderCount = 0;
-    portableRenderBaseline = false;
-    portableRejected = portableEpoch = 0;
+    portableRenderBaseline = portableInitialWarmDone = false;
+    portableRejected = portableStaged = portableStagedHits = portableStagedRejects = portableEpoch = 0;
     memset(protectedPageVerified, 0, sizeof(protectedPageVerified));
     memset(portablePageEpoch, 0, sizeof(portablePageEpoch));
     std::vector<Record>().swap(loaded);
@@ -547,6 +601,8 @@ void mvc2NativeCacheBegin()
     started = sceKernelGetProcessTimeWide();
     portableBudgetUs = std::max(0, std::min(50000,
         cfgLoadInt("perf", "Mvc2PortableWarmBudgetUs", 0)));
+    portableInitialBudgetUs = std::max(0, std::min(5000000,
+        cfgLoadInt("perf", "Mvc2PortableInitialWarmBudgetUs", 0)));
     portableMaxRenders = std::max(0, std::min(120,
         cfgLoadInt("perf", "Mvc2PortableWarmMaxRenders", 0)));
     checkpointSeconds = std::max(5, std::min(120, cfgLoadInt("perf", "Mvc2NativeCacheSeconds", 30)));
@@ -574,6 +630,35 @@ void mvc2NativeCacheBegin()
     }
     if (portableLoad)
         portableEnabled = readPortableCoverage();
+}
+void mvc2NativeCachePrewarmInitial()
+{
+    using namespace mvc2_native;
+    if (portableInitialWarmDone)
+        return;
+    portableInitialWarmDone = true;
+    if (!portableEnabled || !portableInitialBudgetUs)
+        return;
+    const u64 initialStart = sceKernelGetProcessTimeWide();
+    const PortableWarmStats current =
+        prewarmPortableCoverageBudget(portableInitialBudgetUs, false);
+    const u64 currentElapsed = sceKernelGetProcessTimeWide() - initialStart;
+    const u32 remainingUs = currentElapsed < portableInitialBudgetUs
+        ? portableInitialBudgetUs - (u32)currentElapsed : 0;
+    // A block without FPU opcodes is identical across FPSCR modes. Such blocks
+    // can be emitted from coverage recorded in another mode without changing
+    // the single-entry-per-PC block manager contract.
+    const PortableWarmStats independent =
+        prewarmPortableCoverageBudget(remainingUs, true);
+    portableLastRenderCount = ta_getGuestRenderCount();
+    portableRenderBaseline = true;
+    NOTICE_LOG(DYNAREC, "mvc2-portable: initial-prewarm fpu=%08X current_scanned=%u current_matched=%u current_compiled=%u independent_scanned=%u independent_matched=%u independent_compiled=%u staged=%u rejected=%u total=%u/%u elapsed_us=%llu",
+        fpscr.full, current.scanned, current.matched, current.compiled,
+        independent.scanned, independent.matched, independent.compiled,
+        independent.staged, current.rejected + independent.rejected,
+        portableCompiled + portableExisting + portableStaged,
+        (u32)portableRecords.size(),
+        (unsigned long long)(sceKernelGetProcessTimeWide() - initialStart));
 }
 void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCondition,
                            const mvc2_native::Relocation* relocations, u32 relocationCount)
@@ -670,9 +755,35 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
                               relocations + entry.relocationCount);
     learnedCode.insert(learnedCode.end(), code, code + entry.size); // Before linking/fastmem rewrites.
 }
+void mvc2NativeCacheStagePortableBlock(RuntimeBlockInfo* block,
+                                       const mvc2_native::PortableRecord& source)
+{
+    using namespace mvc2_native;
+    stagedPortableBlocks.emplace(key(source.guestPc, source.fpuMode),
+                                 StagedPortableBlock{block, source});
+}
 RuntimeBlockInfo* mvc2NativeCacheLookup(u32 guestPc, u32 fpuMode)
 {
     using namespace mvc2_native;
+    const auto stagedRange = stagedPortableBlocks.equal_range(key(guestPc, fpuMode));
+    for (auto it = stagedRange.first; it != stagedRange.second; ) {
+        auto candidate = it++;
+        RuntimeBlockInfo* block = candidate->second.block;
+        if (!portableProtectionMatches(block)
+                || !portableSourceMatchesNow(candidate->second.source)
+                || (block->has_fpu_op && (sr.status & (1 << 15)))) {
+            block->Discard();
+            delete block;
+            stagedPortableBlocks.erase(candidate);
+            ++portableStagedRejects;
+            continue;
+        }
+        bm_AttachBlockProtection(block);
+        stagedPortableBlocks.erase(candidate);
+        ++portableStagedHits;
+        FT_MARK(Emu, NativeHit, guestPc, 1);
+        return block;
+    }
     if (!enabled) return nullptr;
     if (mmu_enabled() || _vmem_native_mapping_generation() != mapGeneration) {
         enabled = false;

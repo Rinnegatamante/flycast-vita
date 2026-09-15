@@ -443,8 +443,11 @@ static void recSh4_Term()
 // Compile a previously observed guest entry with the current backend. The
 // portable cache has already verified the guest bytes. No cached host code or
 // executable address is reused here.
-Mvc2PortableWarmResult rdv_PrewarmPortableBlock(u32 guestPc, u32 fpuMode)
+Mvc2PortableWarmResult rdv_PrewarmPortableBlock(
+    const mvc2_native::PortableRecord& source, bool stageFpuBlock)
 {
+	const u32 guestPc = source.guestPc;
+	const u32 fpuMode = source.fpuMode;
 	if (bm_GetBlock(guestPc) != nullptr)
 		return Mvc2PortableWarmResult::Existing;
 	if (emit_FreeSpace() < mvc2_native::MaxBlockBytes
@@ -458,6 +461,7 @@ Mvc2PortableWarmResult rdv_PrewarmPortableBlock(u32 guestPc, u32 fpuMode)
 	RuntimeBlockInfo* fresh = ngen_AllocateBlock();
 	bool setup = false;
 	bool compiled = false;
+	bool staged = false;
 	try
 	{
 		setup = fresh->Setup(guestPc, mode);
@@ -468,9 +472,20 @@ Mvc2PortableWarmResult rdv_PrewarmPortableBlock(u32 guestPc, u32 fpuMode)
 			ngen_Compile(fresh, !fresh->read_only,
 				(guestPc & 0xFFFFFF) == 0x08300 || (guestPc & 0xFFFFFF) == 0x10000,
 				false, true);
-			bm_AddBlock(fresh);
-			fresh = nullptr; // ownership transferred to the block manager
-			compiled = true;
+			if (stageFpuBlock && fresh->has_fpu_op)
+			{
+				// Keep the emitted variant out of the single-entry-per-PC map
+				// until the matching FPSCR mode actually requests it.
+				fresh->Discard();
+				mvc2NativeCacheStagePortableBlock(fresh, source);
+				staged = true;
+			}
+			else
+			{
+				bm_AddBlock(fresh);
+				compiled = true;
+			}
+			fresh = nullptr; // ownership transferred to block manager or staged cache
 		}
 	}
 	catch (...)
@@ -484,6 +499,8 @@ Mvc2PortableWarmResult rdv_PrewarmPortableBlock(u32 guestPc, u32 fpuMode)
 		delete fresh;
 	}
 	memcpy(&Sh4cntx, &savedContext, sizeof(savedContext));
+	if (staged)
+		return Mvc2PortableWarmResult::Staged;
 	return compiled
 		? Mvc2PortableWarmResult::Compiled
 		: Mvc2PortableWarmResult::DecodeFailed;

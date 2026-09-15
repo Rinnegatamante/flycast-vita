@@ -223,6 +223,7 @@ void ngen_mainloop(void* context)
 		restarting = false;
 		generate_mainloop();
 		mvc2NativeCacheBegin();
+		mvc2NativeCachePrewarmInitial();
 
 		mainloop(context);
 #if defined(__vita__) && defined(VITA_FRAME_TRACE)
