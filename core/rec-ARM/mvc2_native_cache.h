@@ -6,7 +6,10 @@ static_assert(MaxNativeBytes <= CODE_SIZE,
     "persistent native cache cannot exceed the JIT code cache");
 static Header identity;
 static std::vector<Record> loaded, learned;
+static std::vector<Relocation> loadedRelocations, learnedRelocations;
 static std::vector<u8> loadedCode, learnedCode, consumed;
+static std::vector<PortableRecord> portableRecords;
+static std::vector<u8> portableDone;
 struct KeyHash {
     size_t operator()(u64 key) const { return hashKey32(key); }
 };
@@ -18,6 +21,14 @@ static int validationTRegister, validationFlagsCondition;
 static u64 protectedPageHash[4096];
 static bool protectedPageVerified[4096];
 static u32 pageChecks;
+static bool portableEnabled;
+static size_t portableCursor;
+static u32 portableBudgetUs, portableMaxRenders, portablePolls;
+static u32 portableCompiled, portableExisting, portableLastRenderCount;
+static bool portableRenderBaseline;
+static u32 portableRejected;
+static u64 portablePageHash[4096];
+static u32 portablePageEpoch[4096], portableEpoch;
 #ifdef VITA_FRAME_TRACE
 static int testResetAfter;
 static bool testResetDone, testResetPending;
@@ -26,13 +37,16 @@ static u64 started, deadline;
 static u32 checkpointSeconds;
 static std::string path;
 static constexpr size_t RecordReserveChunk = 12000;
+static constexpr size_t RelocationReserveChunk = 12000;
 static constexpr size_t NativeReserveChunk = 2 * 1024 * 1024;
 
-static bool reserveLearnedCapacity(size_t nextNativeBytes, bool initial)
+static bool reserveLearnedCapacity(size_t nextNativeBytes, size_t nextRelocations, bool initial)
 {
     const size_t recordLimit = MaxRecords - loaded.size();
     const size_t nativeLimit = MaxNativeBytes - loadedCode.size();
     const size_t nativeNeeded = learnedCode.size() + nextNativeBytes;
+    const size_t relocationLimit = MaxTotalRelocations - loadedRelocations.size();
+    const size_t relocationNeeded = learnedRelocations.size() + nextRelocations;
     try {
         if (initial || learned.size() == learned.capacity()) {
             const size_t target = initial
@@ -49,6 +63,14 @@ static bool reserveLearnedCapacity(size_t nextNativeBytes, bool initial)
             if (target > learnedCode.capacity())
                 learnedCode.reserve(target);
         }
+        if (initial || relocationNeeded > learnedRelocations.capacity()) {
+            const size_t target = initial
+                ? std::min(relocationLimit, RelocationReserveChunk)
+                : std::min(relocationLimit, std::max(relocationNeeded,
+                    learnedRelocations.capacity() + RelocationReserveChunk));
+            if (target > learnedRelocations.capacity())
+                learnedRelocations.reserve(target);
+        }
     } catch (...) {
         saturated = 1;
         WARN_LOG(DYNAREC, "mvc2-native: collector memory reservation failed records=%u/%u bytes=%u/%u",
@@ -56,7 +78,8 @@ static bool reserveLearnedCapacity(size_t nextNativeBytes, bool initial)
             (u32)(loadedCode.size() + learnedCode.size()), MaxNativeBytes);
         return false;
     }
-    return learned.size() < recordLimit && nativeNeeded <= nativeLimit;
+    return learned.size() < recordLimit && nativeNeeded <= nativeLimit
+        && relocationNeeded <= relocationLimit;
 }
 
 static u64 configHash()
@@ -75,6 +98,11 @@ static u64 configHash()
     return XXH64(values, sizeof(values), 0);
 }
 static u64 headerHash(Header header)
+{
+    header.headerHash = 0;
+    return XXH64(&header, sizeof(header), 0);
+}
+static u64 portableHeaderHash(PortableHeader header)
 {
     header.headerHash = 0;
     return XXH64(&header, sizeof(header), 0);
@@ -115,6 +143,144 @@ static bool sourceMatches(const Record& entry)
     }
     return true;
 }
+static bool portableSourceMatches(const PortableRecord& entry)
+{
+    const u32 guestOffset = entry.guestPc & RAM_MASK;
+    if (entry.flags & PortableExactSourceHash)
+        return XXH64(mem_b.data + guestOffset, entry.guestBytes, 0) == entry.sourceHash;
+    u32 pageOffset = guestOffset & ~4095u;
+    for (u32 page = 0; page < entry.pageCount; ++page, pageOffset += 4096) {
+        const u32 physicalPage = pageOffset / 4096;
+        if (portablePageEpoch[physicalPage] != portableEpoch) {
+            portablePageHash[physicalPage] = XXH64(mem_b.data + pageOffset, 4096, 0);
+            portablePageEpoch[physicalPage] = portableEpoch;
+        }
+        if (portablePageHash[physicalPage] != entry.pageHash[page])
+            return false;
+    }
+    return true;
+}
+static bool readPortableCoverage()
+{
+    const std::string portablePath = get_writable_data_path("mvc2_portable_cache.bin");
+    FILE* file = fopen(portablePath.c_str(), "rb");
+    if (!file) {
+        NOTICE_LOG(DYNAREC, "mvc2-portable: no coverage file; ordinary JIT");
+        return false;
+    }
+    setvbuf(file, nullptr, _IOFBF, 65536);
+    PortableHeader header{};
+    bool valid = fread(&header, sizeof(header), 1, file) == 1
+        && !memcmp(header.magic, "MVC2SH41", 8)
+        && header.version == PortableVersion
+        && header.headerSize == sizeof(header)
+        && header.recordSize == sizeof(PortableRecord)
+        && header.count <= MaxPortableRecords
+        && header.gameIdentity == PortableGameIdentity
+        && !header.reserved[0] && !header.reserved[1]
+        && !header.reserved[2] && !header.reserved[3]
+        && header.headerHash == portableHeaderHash(header);
+    std::vector<PortableRecord> records;
+    u64 digest = 0;
+    if (valid) {
+        try { records.reserve(std::min<u32>(header.count, 16000)); }
+        catch (...) { valid = false; }
+    }
+    for (u32 index = 0; index < header.count && valid; ++index) {
+        PortableRecord record{};
+        valid = fread(&record, sizeof(record), 1, file) == 1
+            && validPortableRecord(record, RAM_MASK);
+        if (!valid) break;
+        digest = XXH64(&record, sizeof(record), digest);
+        try { records.push_back(record); }
+        catch (...) { valid = false; }
+    }
+    valid = valid && digest == header.payloadHash && fgetc(file) == EOF && !ferror(file);
+    fclose(file);
+    if (!valid) {
+        WARN_LOG(DYNAREC, "mvc2-portable: coverage rejected; ordinary JIT");
+        return false;
+    }
+    portableRecords.swap(records);
+    try { portableDone.assign(portableRecords.size(), 0); }
+    catch (...) {
+        std::vector<PortableRecord>().swap(portableRecords);
+        WARN_LOG(DYNAREC, "mvc2-portable: state allocation failed; ordinary JIT");
+        return false;
+    }
+    NOTICE_LOG(DYNAREC, "mvc2-portable: loaded=%u bytes=%u build_independent=1 budget_us=%u max_renders=%u",
+        (u32)portableRecords.size(),
+        (u32)(sizeof(PortableHeader) + portableRecords.size() * sizeof(PortableRecord)),
+        portableBudgetUs, portableMaxRenders);
+    return !portableRecords.empty();
+}
+static void prewarmPortableCoverage()
+{
+    if (!portableEnabled || portableRecords.empty() || !portableBudgetUs)
+        return;
+    const u32 renderCount = ta_getGuestRenderCount();
+    if (!portableRenderBaseline || renderCount < portableLastRenderCount) {
+        portableLastRenderCount = renderCount;
+        portableRenderBaseline = true;
+        return;
+    }
+    const u32 renderDelta = renderCount - portableLastRenderCount;
+    portableLastRenderCount = renderCount;
+    ++portablePolls;
+    if (portableMaxRenders && renderDelta > portableMaxRenders) {
+        if (portablePolls % 30 == 0)
+            NOTICE_LOG(DYNAREC, "mvc2-portable: active interval renders=%u; prewarm deferred total=%u/%u",
+                renderDelta, portableCompiled + portableExisting, (u32)portableRecords.size());
+        return;
+    }
+    const u64 start = sceKernelGetProcessTimeWide();
+    const size_t count = portableRecords.size();
+    u32 scanned = 0, unavailable = 0, matched = 0, compiled = 0, existing = 0, rejected = 0;
+    ++portableEpoch;
+    if (!portableEpoch) {
+        memset(portablePageEpoch, 0, sizeof(portablePageEpoch));
+        portableEpoch = 1;
+    }
+    while (scanned < count) {
+        if (sceKernelGetProcessTimeWide() - start >= portableBudgetUs)
+            break;
+        const size_t index = portableCursor;
+        portableCursor = (portableCursor + 1) % count;
+        ++scanned;
+        if (portableDone[index])
+            continue;
+        const PortableRecord& record = portableRecords[index];
+        if (record.fpuMode != fpscr.full || !portableSourceMatches(record)) {
+            ++unavailable;
+        } else {
+            ++matched;
+            const Mvc2PortableWarmResult result =
+                rdv_PrewarmPortableBlock(record.guestPc, record.fpuMode);
+            if (result == Mvc2PortableWarmResult::NoSpace) {
+                portableEnabled = false;
+                WARN_LOG(DYNAREC, "mvc2-portable: prewarm stopped; JIT cache has no safe reserve");
+                break;
+            }
+            portableDone[index] = 1;
+            if (result == Mvc2PortableWarmResult::Compiled) {
+                ++compiled;
+                ++portableCompiled;
+            } else if (result == Mvc2PortableWarmResult::Existing) {
+                ++existing;
+                ++portableExisting;
+            } else {
+                ++rejected;
+                ++portableRejected;
+            }
+        }
+    }
+    if (compiled || rejected || portablePolls % 30 == 0) {
+        NOTICE_LOG(DYNAREC, "mvc2-portable: prewarm renders=%u scanned=%u unavailable=%u matched=%u compiled=%u existing=%u rejected=%u total=%u/%u elapsed_us=%llu",
+            renderDelta, scanned, unavailable, matched, compiled, existing, rejected,
+            portableCompiled + portableExisting, (u32)count,
+            (unsigned long long)(sceKernelGetProcessTimeWide() - start));
+    }
+}
 static bool readCache()
 {
     FILE* file = fopen(path.c_str(), "rb");
@@ -125,12 +291,15 @@ static bool readCache()
     setvbuf(file, nullptr, _IOFBF, 65536);
     Header header{};
     bool valid = fread(&header, sizeof(header), 1, file) == 1;
+    const bool legacy = valid && header.version == LegacyVersion;
     const char* reason = "header";
     valid = valid && !memcmp(header.magic, identity.magic, sizeof(header.magic))
-        && header.version == Version && header.headerSize == sizeof(Header)
-        && header.recordSize == sizeof(Record) && header.count <= MaxRecords
+        && (legacy || header.version == Version) && header.headerSize == sizeof(Header)
+        && header.recordSize == (legacy ? sizeof(LegacyRecord) : sizeof(Record))
+        && header.count <= MaxRecords && header.relocationCount <= MaxTotalRelocations
+        && (!legacy || header.relocationCount == 0)
         && header.extent >= identity.prefixSize && header.extent <= CODE_SIZE
-        && header.headerHash == headerHash(header) && header.reserved == 0;
+        && header.headerHash == headerHash(header);
     if (valid) {
         reason = "build/layout/config";
         valid = !memcmp(header.buildId, identity.buildId, sizeof(header.buildId))
@@ -140,37 +309,71 @@ static bool readCache()
     }
     u32 end = identity.prefixSize;
     u32 nativeBytes = 0;
+    u32 relocationCount = 0;
     u64 digest = 0;
     if (valid) {
         reason = "records/checksum";
         loaded.reserve(header.count);
-        if (merging)
+        if (merging) {
             loadedCode.reserve(std::min<u32>(header.extent - header.prefixSize, MaxNativeBytes));
+            loadedRelocations.reserve(header.relocationCount);
+        }
+        std::array<Relocation, MaxRelocations> entryRelocations;
         for (u32 n = 0; n < header.count && valid; ++n) {
             Record entry{};
-            valid = fread(&entry, sizeof(entry), 1, file) == 1
-                && validRecord(entry, identity.prefixSize, end, CODE_SIZE, RAM_MASK)
+            if (legacy) {
+                LegacyRecord oldEntry{};
+                valid = fread(&oldEntry, sizeof(oldEntry), 1, file) == 1;
+                if (valid) {
+                    digest = XXH64(&oldEntry, sizeof(oldEntry), digest);
+                    entry = upgradeLegacyRecord(oldEntry);
+                }
+            } else {
+                valid = fread(&entry, sizeof(entry), 1, file) == 1;
+                if (valid)
+                    digest = XXH64(&entry, sizeof(entry), digest);
+            }
+            valid = valid && validRecord(entry, identity.prefixSize, end, CODE_SIZE, RAM_MASK)
                 && entry.size <= MaxNativeBytes - nativeBytes
+                && entry.relocationCount <= MaxTotalRelocations - relocationCount
                 && !excludedPc(entry.guestPc);
             if (!valid) break;
+            if (entry.relocationCount) {
+                valid = fread(entryRelocations.data(), sizeof(Relocation),
+                              entry.relocationCount, file) == entry.relocationCount;
+                if (!valid) break;
+                digest = XXH64(entryRelocations.data(),
+                               entry.relocationCount * sizeof(Relocation), digest);
+            }
             u8* destination = CodeCache + entry.offset;
             valid = fread(destination, entry.size, 1, file) == 1;
             if (!valid) break;
-            digest = XXH64(&entry, sizeof(entry), digest);
             digest = XXH64(destination, entry.size, digest);
+            for (u32 relocation = 0; relocation < entry.relocationCount && valid; ++relocation)
+                valid = validRelocation(entry, entryRelocations[relocation],
+                                        destination, identity.codeBase)
+                    && !targetsMovableCode(entryRelocations[relocation], identity.codeBase,
+                                           identity.prefixSize, CODE_SIZE);
+            if (!valid) break;
             loaded.push_back(entry);
-            if (merging)
+            if (merging) {
                 loadedCode.insert(loadedCode.end(), destination, destination + entry.size);
+                loadedRelocations.insert(loadedRelocations.end(), entryRelocations.begin(),
+                                         entryRelocations.begin() + entry.relocationCount);
+            }
             nativeBytes += entry.size;
+            relocationCount += entry.relocationCount;
             end = entry.offset + entry.size;
         }
         valid = valid && digest == header.payloadHash && header.extent == end
+            && relocationCount == header.relocationCount
             && fgetc(file) == EOF && !ferror(file);
     }
     fclose(file);
     if (!valid) {
         loaded.clear();
         loadedCode.clear();
+        loadedRelocations.clear();
         WARN_LOG(DYNAREC, "mvc2-native: cache rejected (%s); ordinary JIT", reason);
         return false; // No code is published and the normal allocator can overwrite it.
     }
@@ -182,8 +385,9 @@ static bool readCache()
     if (end > identity.prefixSize)
         vmem_platform_flush_cache(CodeCache + identity.prefixSize, CodeCache + end - 1,
                                   CodeCache + identity.prefixSize, CodeCache + end - 1);
-    NOTICE_LOG(DYNAREC, "mvc2-native: loaded=%u extent=%u load_us=%llu (no decode/emission)",
-        (unsigned)loaded.size(), end, (unsigned long long)(sceKernelGetProcessTimeWide() - started));
+    NOTICE_LOG(DYNAREC, "mvc2-native: loaded=%u relocations=%u extent=%u version=%u load_us=%llu (no decode/emission)",
+        (unsigned)loaded.size(), relocationCount, end, header.version,
+        (unsigned long long)(sceKernelGetProcessTimeWide() - started));
     return true;
 }
 static bool saveCache(bool keepLearned)
@@ -192,16 +396,25 @@ static bool saveCache(bool keepLearned)
     Header header = identity;
     header.count = loaded.size() + learned.size();
     header.extent = learned.back().offset + learned.back().size;
-    size_t offset = 0;
+    header.relocationCount = loadedRelocations.size() + learnedRelocations.size();
+    size_t offset = 0, relocationOffset = 0;
     for (const Record& entry : loaded) {
         header.payloadHash = XXH64(&entry, sizeof(entry), header.payloadHash);
+        if (entry.relocationCount)
+            header.payloadHash = XXH64(loadedRelocations.data() + relocationOffset,
+                entry.relocationCount * sizeof(Relocation), header.payloadHash);
         header.payloadHash = XXH64(loadedCode.data() + offset, entry.size, header.payloadHash);
+        relocationOffset += entry.relocationCount;
         offset += entry.size;
     }
-    offset = 0;
+    offset = relocationOffset = 0;
     for (const Record& entry : learned) {
         header.payloadHash = XXH64(&entry, sizeof(entry), header.payloadHash);
+        if (entry.relocationCount)
+            header.payloadHash = XXH64(learnedRelocations.data() + relocationOffset,
+                entry.relocationCount * sizeof(Relocation), header.payloadHash);
         header.payloadHash = XXH64(learnedCode.data() + offset, entry.size, header.payloadHash);
+        relocationOffset += entry.relocationCount;
         offset += entry.size;
     }
     header.headerHash = headerHash(header);
@@ -211,27 +424,36 @@ static bool saveCache(bool keepLearned)
     if (file) {
         setvbuf(file, nullptr, _IOFBF, 65536);
         valid = fwrite(&header, sizeof(header), 1, file) == 1;
-        offset = 0;
+        offset = relocationOffset = 0;
         for (const Record& entry : loaded) {
             valid = valid && fwrite(&entry, sizeof(entry), 1, file) == 1;
+            if (entry.relocationCount)
+                valid = valid && fwrite(loadedRelocations.data() + relocationOffset,
+                    sizeof(Relocation), entry.relocationCount, file) == entry.relocationCount;
             valid = valid && fwrite(loadedCode.data() + offset, entry.size, 1, file) == 1;
+            relocationOffset += entry.relocationCount;
             offset += entry.size;
         }
-        offset = 0;
+        offset = relocationOffset = 0;
         for (const Record& entry : learned) {
             valid = valid && fwrite(&entry, sizeof(entry), 1, file) == 1;
+            if (entry.relocationCount)
+                valid = valid && fwrite(learnedRelocations.data() + relocationOffset,
+                    sizeof(Relocation), entry.relocationCount, file) == entry.relocationCount;
             valid = valid && fwrite(learnedCode.data() + offset, entry.size, 1, file) == 1;
+            relocationOffset += entry.relocationCount;
             offset += entry.size;
         }
         valid = fclose(file) == 0 && valid;
     }
     valid = valid && rename(temporary.c_str(), path.c_str()) == 0;
-    NOTICE_LOG(DYNAREC, "mvc2-native: saved=%u base=%u added=%u bytes=%u saturated=%u io_error=%u header_hash=%016llx path=%s",
+    NOTICE_LOG(DYNAREC, "mvc2-native: saved=%u base=%u added=%u relocations=%u bytes=%u saturated=%u io_error=%u header_hash=%016llx path=%s",
         header.count, (unsigned)loaded.size(), (unsigned)learned.size(),
-        (unsigned)(loadedCode.size() + learnedCode.size()), saturated, !valid,
+        header.relocationCount, (unsigned)(loadedCode.size() + learnedCode.size()), saturated, !valid,
         (unsigned long long)header.headerHash, path.c_str());
     if (valid && !keepLearned) {
         std::vector<Record>().swap(learned);
+        std::vector<Relocation>().swap(learnedRelocations);
         std::vector<u8>().swap(learnedCode);
     }
     return valid;
@@ -242,25 +464,41 @@ void mvc2NativeCacheReset()
 {
     using namespace mvc2_native;
     initialized = enabled = recording = merging = validating = reported = false;
+    portableEnabled = false;
+    portableCursor = 0;
+    portableBudgetUs = portableMaxRenders = portablePolls = 0;
+    portableCompiled = portableExisting = portableLastRenderCount = 0;
+    portableRenderBaseline = false;
+    portableRejected = portableEpoch = 0;
     memset(protectedPageVerified, 0, sizeof(protectedPageVerified));
+    memset(portablePageEpoch, 0, sizeof(portablePageEpoch));
     std::vector<Record>().swap(loaded);
     std::vector<Record>().swap(learned);
+    std::vector<Relocation>().swap(loadedRelocations);
+    std::vector<Relocation>().swap(learnedRelocations);
     std::vector<u8>().swap(loadedCode);
     std::vector<u8>().swap(consumed);
     std::vector<u8>().swap(learnedCode);
+    std::vector<PortableRecord>().swap(portableRecords);
+    std::vector<u8>().swap(portableDone);
     blockIndex.clear();
 }
 void mvc2NativeCacheInvalidatePage(u32 guestAddress)
 {
     mvc2_native::protectedPageVerified[(guestAddress & RAM_MASK) / 4096] = false;
 }
+bool mvc2NativeCacheWantsRelocations()
+{
+    return mvc2_native::recording && !mvc2_native::validating;
+}
 void mvc2NativeCacheBegin()
 {
     using namespace mvc2_native;
     if (initialized) {
-        if ((enabled || recording) && (configHash() != identity.configHash
-                || _vmem_native_mapping_generation() != mapGeneration))
-            enabled = recording = false;
+        if ((enabled || recording || portableEnabled)
+                && (configHash() != identity.configHash
+                    || _vmem_native_mapping_generation() != mapGeneration))
+            enabled = recording = portableEnabled = false;
         return;
     }
     initialized = true;
@@ -270,10 +508,17 @@ void mvc2NativeCacheBegin()
     if (settings.content.gameId != "T1212N" || config::FullMMU || mmu_enabled()
             || !_nvmem_enabled() || RAM_SIZE != 16 * 1024 * 1024)
         return;
+    const bool aotPack = cfgLoadBool("perf", "Mvc2AotPack", false);
+    const bool portableLoad = cfgLoadBool("perf", "Mvc2PortableCache", false);
     recording = cfgLoadBool("perf", "Mvc2NativeCacheRecord", false);
-    bool load = cfgLoadBool("perf", "Mvc2NativeCache", false);
+    const bool nativeLoad = cfgLoadBool("perf", "Mvc2NativeCache", false);
+    bool load = aotPack || nativeLoad;
+    if (aotPack && recording) {
+        WARN_LOG(DYNAREC, "mvc2-native: AOT pack is read-only; runtime recording disabled");
+        recording = false;
+    }
     merging = recording && load && cfgLoadBool("perf", "Mvc2NativeCacheMerge", false);
-    if (!recording && !load) return;
+    if (!recording && !load && !portableLoad) return;
     if (memcmp(mvc2_native_build_id, "\x04\0\0\0\x14\0\0\0\x03\0\0\0GNU\0", 16)) {
         WARN_LOG(DYNAREC, "mvc2-native: missing linked build identity");
         recording = false;
@@ -300,29 +545,38 @@ void mvc2NativeCacheBegin()
 #endif
     validateHits = cfgLoadBool("perf", "Mvc2NativeCacheValidate", false);
     started = sceKernelGetProcessTimeWide();
+    portableBudgetUs = std::max(0, std::min(50000,
+        cfgLoadInt("perf", "Mvc2PortableWarmBudgetUs", 0)));
+    portableMaxRenders = std::max(0, std::min(120,
+        cfgLoadInt("perf", "Mvc2PortableWarmMaxRenders", 0)));
     checkpointSeconds = std::max(5, std::min(120, cfgLoadInt("perf", "Mvc2NativeCacheSeconds", 30)));
     deadline = started + checkpointSeconds * 1000000ULL;
-    path = get_writable_data_path("mvc2_native_cache.bin");
+    path = get_writable_data_path(aotPack ? "mvc2_aot_pack.bin" : "mvc2_native_cache.bin");
+    if (aotPack)
+        NOTICE_LOG(DYNAREC, "mvc2-native: offline AOT pack selected path=%s", path.c_str());
     // Ordinary experiments keep cold training and replay separate. Explicit
     // beta merge mode reserves the existing layout, reuses its valid records,
     // and appends only runtime misses at later native offsets.
     if (merging) {
         enabled = readCache();
-        if (!reserveLearnedCapacity(0, true))
+        if (!reserveLearnedCapacity(0, 0, true))
             recording = merging = false;
         if (recording)
             NOTICE_LOG(DYNAREC, "mvc2-native: incremental recording base=%u bytes=%u origin=%llu",
                 (unsigned)loaded.size(), (unsigned)loadedCode.size(), (unsigned long long)started);
     } else if (recording) {
-        if (!reserveLearnedCapacity(0, true))
+        if (!reserveLearnedCapacity(0, 0, true))
             recording = false;
         if (recording)
             NOTICE_LOG(DYNAREC, "mvc2-native: recording cold blocks, origin=%llu", (unsigned long long)started);
     } else if (load) {
         enabled = readCache();
     }
+    if (portableLoad)
+        portableEnabled = readPortableCoverage();
 }
-void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCondition)
+void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCondition,
+                           const mvc2_native::Relocation* relocations, u32 relocationCount)
 {
     using namespace mvc2_native;
     if (validating) {
@@ -340,12 +594,15 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
     }
     const size_t recordCount = loaded.size() + learned.size();
     const size_t nativeBytes = loadedCode.size() + learnedCode.size();
+    const size_t totalRelocations = loadedRelocations.size() + learnedRelocations.size();
     if (recordCount >= MaxRecords || nativeBytes >= MaxNativeBytes
-            || block->host_code_size > MaxNativeBytes - nativeBytes) {
+            || block->host_code_size > MaxNativeBytes - nativeBytes
+            || relocationCount > MaxRelocations
+            || totalRelocations > MaxTotalRelocations - std::min<u32>(relocationCount, MaxRelocations)) {
         if (!saturated) {
-            WARN_LOG(DYNAREC, "mvc2-native: collector saturated records=%u/%u bytes=%u/%u next=%u",
-                (u32)recordCount, MaxRecords, (u32)nativeBytes, MaxNativeBytes,
-                block->host_code_size);
+            WARN_LOG(DYNAREC, "mvc2-native: collector saturated records=%u/%u relocations=%u/%u bytes=%u/%u next=%u",
+                (u32)recordCount, MaxRecords, (u32)totalRelocations, MaxTotalRelocations,
+                (u32)nativeBytes, MaxNativeBytes, block->host_code_size);
         }
         saturated = 1;
         return;
@@ -369,6 +626,7 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
     entry.tRegister = tRegister;
     entry.flagsCondition = flagsCondition;
     entry.pageCount = ((entry.guestPc & 4095) + entry.guestBytes + 4095) / 4096;
+    entry.relocationCount = relocationCount;
     u32 previousEnd = learned.empty()
         ? (loaded.empty() ? identity.prefixSize : loaded.back().offset + loaded.back().size)
         : learned.back().offset + learned.back().size;
@@ -396,10 +654,20 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
             return;
         }
     }
-    if (!reserveLearnedCapacity(entry.size, false))
+    const u8* code = (const u8*)block->code;
+    for (u32 relocation = 0; relocation < entry.relocationCount; ++relocation)
+        if (!validRelocation(entry, relocations[relocation], code, identity.codeBase)
+                || targetsMovableCode(relocations[relocation], identity.codeBase,
+                                      identity.prefixSize, CODE_SIZE)) {
+            WARN_LOG(DYNAREC, "mvc2-native: invalid relocation pc=%08X offset=%u target=%08X; block skipped",
+                entry.guestPc, relocations[relocation].offset, relocations[relocation].target);
+            return;
+        }
+    if (!reserveLearnedCapacity(entry.size, entry.relocationCount, false))
         return;
     learned.push_back(entry);
-    const u8* code = (const u8*)block->code;
+    learnedRelocations.insert(learnedRelocations.end(), relocations,
+                              relocations + entry.relocationCount);
     learnedCode.insert(learnedCode.end(), code, code + entry.size); // Before linking/fastmem rewrites.
 }
 RuntimeBlockInfo* mvc2NativeCacheLookup(u32 guestPc, u32 fpuMode)
@@ -489,7 +757,10 @@ void mvc2NativeCachePoll()
         return;
     }
 #endif
-    if (!initialized || (reported && !recording) || (!enabled && !recording && !validationFailures)
+    if (!initialized)
+        return;
+    prewarmPortableCoverage();
+    if ((reported && !recording) || (!enabled && !recording && !validationFailures)
             || sceKernelGetProcessTimeWide() < deadline)
         return;
     NOTICE_LOG(DYNAREC, "mvc2-native: report hits=%u misses=%u source_reject=%u used_reject=%u duplicate_skip=%u saturated=%u validated=%u failures=%u page_checks=%u",

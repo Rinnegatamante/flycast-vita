@@ -44,6 +44,8 @@ using namespace vixl::aarch32;
 #include "cfg/option.h"
 #include "cfg/cfg.h"
 
+u32 ta_getGuestRenderCount();
+
 //#define CANONICALTEST
 
 /*
@@ -112,6 +114,26 @@ public:
 };
 
 static Arm32Assembler ass;
+static std::array<mvc2_native::Relocation, mvc2_native::MaxRelocations> mvc2NativeRelocations;
+static u32 mvc2NativeRelocationCount;
+static bool mvc2CaptureNativeRelocations;
+static bool mvc2NativeRelocationsOverflow;
+
+static void mvc2RecordNativeRelocation(const void* target)
+{
+	if (!mvc2CaptureNativeRelocations)
+		return;
+	if (mvc2NativeRelocationCount < mvc2NativeRelocations.size())
+	{
+		mvc2NativeRelocations[mvc2NativeRelocationCount].offset = ass.GetCursorOffset();
+		mvc2NativeRelocations[mvc2NativeRelocationCount].target = (u32)(uintptr_t)target;
+		++mvc2NativeRelocationCount;
+	}
+	else
+	{
+		mvc2NativeRelocationsOverflow = true;
+	}
+}
 
 #include "mvc2_fpu_pair.h"
 static bool mvc2DirectFpuPairs;
@@ -227,6 +249,7 @@ static void jump(const void *code, ConditionType cond = al)
 	else
 	{
 		Label code_label(offset);
+		mvc2RecordNativeRelocation(code);
 		ass.B(cond, &code_label);
 	}
 }
@@ -246,6 +269,7 @@ static void call(const void *code, ConditionType cond = al)
 	else
 	{
 		Label code_label(offset);
+		mvc2RecordNativeRelocation(code);
 		ass.Bl(cond, &code_label);
 	}
 }
@@ -2051,6 +2075,7 @@ static void ngen_compile_opcode(RuntimeBlockInfo* block, shil_opcode* op, bool o
 
 void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool staging, bool optimise)
 {
+	mvc2CaptureNativeRelocations = false;
 	mvc2DirectFpuPairs = settings.content.gameId == "T1212N" && cfgLoadBool("perf", "Mvc2DirectFpuPairs", false);
 	static bool pairsTested;
 	if (mvc2DirectFpuPairs && !pairsTested && cfgLoadBool("perf", "Mvc2FpuPairValidate", false))
@@ -2123,6 +2148,10 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 		block->host_code_size = end - (u8 *)block->code;
 		return;
 	}
+
+	mvc2NativeRelocationCount = 0;
+	mvc2NativeRelocationsOverflow = false;
+	mvc2CaptureNativeRelocations = mvc2NativeCacheWantsRelocations();
 
 	//reg alloc
 	{
@@ -2286,8 +2315,12 @@ void ngen_Compile(RuntimeBlockInfo* block, bool force_checks, bool reset, bool s
 	if (conditional && !block->has_jcond && !block->oplist.empty()
 			&& block->oplist.back().rd._reg == reg_sr_T && ccmap.count(block->oplist.back().op))
 		flagsCondition = (block->BlockType & 1) ? ccmap[block->oplist.back().op] : ccnmap[block->oplist.back().op];
-	mvc2NativeCacheRecord(block, conditional && native->T_reg.IsRegister() ? native->T_reg.GetCode() : -1,
-		flagsCondition);
+	mvc2CaptureNativeRelocations = false;
+	mvc2NativeCacheRecord(block,
+		conditional && native->T_reg.IsRegister() ? native->T_reg.GetCode() : -1,
+		flagsCondition, mvc2NativeRelocations.data(),
+		mvc2NativeRelocationsOverflow ? mvc2_native::MaxRelocations + 1
+			: mvc2NativeRelocationCount);
 }
 
 #include "mvc2_native_cache.h"

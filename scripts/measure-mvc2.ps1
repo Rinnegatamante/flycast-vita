@@ -74,19 +74,23 @@ try {
             $lastRun = ([regex]::Split((Get-Content -LiteralPath $logPath -Raw), '(?m)(?=^\d\d:\d\d:\d\d\d .*Auto-starting content ux0:data/marvel/)'))[-1]
             $readbackText = Get-Content -LiteralPath $readback -Raw
             if ($readbackText -match '(?m)^Mvc2NativeCacheRecord\s*=\s*yes\s*$') {
-                $nativeSaves = @([regex]::Matches($lastRun, 'mvc2-native: saved=\d+(?: base=\d+ added=\d+)? bytes=\d+ saturated=\d+ io_error=0 header_hash=([0-9a-f]{16})'))
+                $nativeSaves = @([regex]::Matches($lastRun, 'mvc2-native: saved=\d+(?: base=\d+ added=\d+)?(?: relocations=\d+)? bytes=\d+ saturated=\d+ io_error=0 header_hash=([0-9a-f]{16})'))
                 $mergeMode = $readbackText -match '(?m)^Mvc2NativeCacheMerge\s*=\s*yes\s*$'
                 if ($nativeSaves.Count -eq 0 -and (-not $mergeMode -or $lastRun -notmatch 'mvc2-native: incremental recording base=\d+ bytes=\d+')) {
                     throw 'Native cache export missing or failed'
                 }
-                $nativePath = Join-Path $evidence "$label-native-cache.bin"
-                Connect-Devkit
-                try { Copy-Devkit 'ux0:data/flycast/data/mvc2_native_cache.bin' $nativePath }
-                finally { & $ctrl disconnect $Target | Out-Null }
-                $nativeBytes = [IO.File]::ReadAllBytes($nativePath)
-                if ($nativeBytes.Length -lt 104) { throw 'Native cache export is truncated' }
-                if ($nativeSaves.Count -gt 0 -and ([BitConverter]::ToUInt64($nativeBytes, 72).ToString('x16')) -ne $nativeSaves[-1].Groups[1].Value) {
-                    throw 'Native cache does not match this recording'
+                if ($nativeSaves.Count -eq 0) {
+                    Write-Warning 'Native cache checkpoint not reached; no cache artifact pulled'
+                } else {
+                    $nativePath = Join-Path $evidence "$label-native-cache.bin"
+                    Connect-Devkit
+                    try { Copy-Devkit 'ux0:data/flycast/data/mvc2_native_cache.bin' $nativePath }
+                    finally { & $ctrl disconnect $Target | Out-Null }
+                    $nativeBytes = [IO.File]::ReadAllBytes($nativePath)
+                    if ($nativeBytes.Length -lt 104) { throw 'Native cache export is truncated' }
+                    if (([BitConverter]::ToUInt64($nativeBytes, 72).ToString('x16')) -ne $nativeSaves[-1].Groups[1].Value) {
+                        throw 'Native cache does not match this recording'
+                    }
                 }
             }
             if ($PullFrameTrace -and $readbackText -match '(?m)^FrameTrace\s*=\s*yes\s*$') {

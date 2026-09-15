@@ -1610,25 +1610,160 @@ can regress or break audio. UI, networking/GGPO, Naomi paths, box-art and
 texture upscalers are further standalone candidates. None are part of the boot
 hotfix until measured.
 
+### Profile-guided AOT native pack accepted, 2026-09-14
+
+This is a game-specific, profile-guided static native pack, not a general SH4
+decompiler or a claim that the entire executable has been statically
+recompiled. The existing SH4 -> SHIL -> ARM32 backend remains the compiler.
+Format v3 records every external A32 `B`/`BL` emitted for a block, including
+its exact target, so an offline tool can move the block and rewrite only those
+known PC-relative instructions. It does not scan arbitrary ARM words: literal
+pool data can have the same bit pattern as a branch. Relocations into the
+movable JIT body are rejected to prevent a packed block from retaining a stale
+cross-block address.
+
+`scripts/build-mvc2-aot-pack.ps1` builds the host packer. Its interface is:
+
+`build-vita-tools/mvc2-aot-pack.exe --output mvc2_aot_pack.bin shard1.bin [shard2.bin ...]`
+
+Inputs must have identical build ID, code/context bases, native prefix,
+memory layout and code-generation configuration. Source variants are
+deduplicated deterministically, and conflicting native results abort the
+pack. Existing v2 caches remain loadable and can be converted, but are marked
+fixed-offset because they contain no relocation metadata; only freshly
+collected v3 blocks can be freely reordered. The output is deliberately an
+external file, not embedded in the SELF, so this does not repeat the beta 2
+executable-memory regression. Vita ASLR is already disabled by `NOASLR`.
+
+The first same-build v3 collection produced 6,939 records, 750,396 native
+bytes, 16,378 relocations, 181 writable-SMC blocks and no fixed records. Cache
+SHA256 is
+`CA85340730C9654F40173BA510ED5369A8E123EB0E9955D0526A0AC1DC90873C`.
+The deterministic pack removed 144 bytes of allocator holes and has SHA256
+`F678499874571B0F00BEF0330C7E2F8DB97CE7CA25EE951BA516775A8693B92E`.
+Packing the same shard twice deduplicated 6,939 records and produced the exact
+same SHA256. Host format/relocation tests pass.
+
+On target, `Mvc2AotPack = yes` selects the read-only
+`ux0:data/flycast/data/mvc2_aot_pack.bin`; a missing/rejected record falls back
+to ordinary JIT. Runtime collection is disabled if it is accidentally enabled
+at the same time, protecting the curated file. Reduced SMC remains configured
+and writable records retain the emitted inline check. The pack loaded all
+6,939 records and 16,378 relocations in about 202 ms. Regeneration validation
+executed 6,684 hits with zero native-byte/metadata failures; the deterministic
+scene had seven true misses and 73 source/protection-state rejects.
+
+Three paired non-validation runs over the same 16 guest seconds and exactly
+800 renders measured JIT at 16.199/16.147/16.133 s (mean ratio `0.99012x`) and
+AOT at 15.974/15.961/15.955 s (mean ratio `1.00230x`). This is a 1.23% relative
+throughput gain and full average speed for this captured interval. It is not
+yet evidence that every individual hitch or the whole game is full speed.
+Collection evidence is under
+`build-vita-cache-normal/devkit-logs/mvc2-aot-v3-collect-50s/20260914-221148/`,
+validation under `mvc2-aot-v3-validate/20260914-221428/`, and paired results
+under `mvc2-aot-v3-ab3/20260914-221607/`.
+
+The LTO-off Release has GNU build ID
+`cc64aba82f4aa7be3fa74314493229d56c3a8d53`, ELF SHA256
+`364EC89D44557D750DEECA79CC3B4C778EE0EA3B2859FAB43394A154E64BDCCB`,
+SELF SHA256
+`D65CA03E8EEE15098BF8AD44998232E2C5F1FC35BBA099B4DC0D362A2045ADC9`
+and VPK SHA256
+`2A9D78C1847C97B941314F5FD69E785B85B14223DB96426F5393482A621C0770`.
+The adjacent SFO retains ATTRIBUTE2=12 and SHA256
+`0106D568E3DC48228DE1A4AF779D2B4DAD9FE5DA393170ED826037A44A4038F0`.
+
+### Executable-independent SH4 coverage and beta 3, 2026-09-15
+
+The native v3 pack above is explicitly disposable: it contains ARM code,
+native branch targets, code/context bases, a code-generation configuration
+hash and the Flycast GNU build ID. It must never be reused after a relevant
+executable change. The canonical artifact is now instead
+`mvc2_portable_cache.bin`. Portable format v1 contains only the MvC2 US v1.001
+identity and, per observed block, the guest PC, FPSCR mode, SH4 byte length and
+exact-block or backing-page source fingerprints. It contains no ARM code, host
+address, native layout, configuration hash or Flycast build ID.
+
+`mvc2-aot-pack --coverage-output` converts and merges validated native v3
+collector shards without requiring their native identities to match. A host
+cross-identity test changed an input build ID, merged it with the original and
+produced the same 899,136-byte portable file. A stronger target test used two
+real collectors made by different executables: build IDs
+`cc64aba82f4aa7be3fa74314493229d56c3a8d53` and
+`0f6c9c33a84a2e68396affc5f391e757c2438163`. Their 28,096 input records
+deduplicated to the same 14,048 portable records and the exact SHA256
+`EBA1007BDC54C3C57BFF872F673998398720AB0FD493CDF45B3B5FB458C0BF86`.
+Of these, 382 writable-SMC variants use an exact guest-byte hash and 13,666
+use one to four protected-page hashes.
+
+At runtime, the portable file verifies the current RAM source and invokes the
+current SH4 -> SHIL -> ARM32 backend on the emulator thread. It does not copy
+old native bytes. The ordinary JIT remains the fallback for missing or not-yet
+resident code. This removes the need to replay gameplay or re-dump coverage
+after changing Flycast, while still allowing every new executable to emit code
+using its own current layout and optimizations. It is profile-guided prewarm,
+not a proof that the entire disc has been statically recovered: code that is
+decompressed or overlaid at runtime can only be matched after it appears in
+Dreamcast RAM.
+
+The cross-build cold-boot smoke is under
+`build-vita-cache-normal/devkit-logs/mvc2-portable-cross-build-smoke/20260915-112303/`.
+With native load/recording and AOT disabled, the new executable loaded all
+14,048 old coverage records and compiled or found 14,005 of them; 43 were not
+resident in the observed state and no block was rejected. The 50 ms poll
+budget was intentionally diagnostic and caused visible timing overhead, so
+its `0.75033x` early-boot ratio is not a performance result.
+
+The beta configuration uses a 2,000 us soft poll budget and keeps Reduced SMC
+checks. A 145-second cold-boot/checkpoint run is under
+`build-vita-cache-normal/devkit-logs/mvc2-portable-beta-collector-checkpoint/20260915-113127/`.
+It safely rejected the stale build-specific native file, loaded the portable
+coverage, remained running, and atomically saved 14,048 freshly emitted v3
+records, 1,504,176 native bytes and 32,669 relocations with the new build ID.
+That shard has SHA256
+`9E2163875B09B486C0E653D980A9CCAF1134AA33DD1C8FCBAA2A5B7CE5E8B714`.
+The measurement harness now refuses to pull a stale native artifact when a
+run ends before its first successful checkpoint.
+
+The LTO-off Release has ELF SHA256
+`1D7F113BC0CE9EC2406BAE060025EFB44D777E7E4530FF708824F659B10AB7A5`,
+SELF SHA256
+`4185646C6827131B8D77B54E8ECF3335B8175BAE295C0510F4B94C53D7CD474C`
+and VPK SHA256
+`8F00A2493DA21CAC80959973DC6B1631A1BCAE13C44B3FB878F17E06539D3C93`.
+The adjacent SFO still has ATTRIBUTE2=12 and SHA256
+`0106D568E3DC48228DE1A4AF779D2B4DAD9FE5DA393170ED826037A44A4038F0`.
+The reproducible tester archive is
+`build-vita-cache-normal/mvc2-beta-collector-beta3-portable1.zip`, SHA256
+`61B327F2C2894428608A3D0EA26B2A3AD20B3F586E8DF0D04E67EF37AE9F0192`.
+It includes the VPK, loose SELF plus adjacent `sce_sys/param.sfo`, collector
+configuration, portable coverage and tester instructions. It is a collection
+beta, not a whole-game full-speed claim.
+
 ## Next evidence gate
 
-1. Distribute the beta collector across played matches, stages, character teams
-   and between-fight transitions. Keep each returned cache/log/savestate as a
-   separate artifact; replay representative scenes into one canonical layout,
-   then repeat regeneration and corruption guards on that aggregate. Implement
-   disjoint native-offset shards before attempting direct parallel cache merge.
-2. Instrument actual Reduced-SMC failures and writable-page invalidations over
+1. Distribute beta 3 across played matches, stages, character teams and
+   between-fight transitions. Keep each cache/log/savestate as a separate
+   artifact. Convert all valid v3 shards, including shards from later Flycast
+   executables, with `mvc2-aot-pack --coverage-output`; the portable coverage
+   file is canonical. Use `--output` only when deliberately producing a
+   disposable native pack from shards with one exact native identity.
+2. Add compile cost and phase/first-use priority to portable coverage, then
+   schedule newly resident stage/character blocks during loading transitions.
+   Measure maximum poll overrun and fight-frame latency with the existing
+   savestate before increasing the 2 ms beta budget.
+3. Instrument actual Reduced-SMC failures and writable-page invalidations over
    fight transitions before implementing an adaptive policy. Do not infer hot
    SMC blocks from ordinary JIT compilation events.
-3. For sustained execution cost, retain the post-division profile. The vertex cluster
+4. For sustained execution cost, retain the post-division profile. The vertex cluster
    still needs an algorithmic/vector or data-movement improvement; merely
    translating its small emission block to C++ lost performance, and removing
    `make_index` validation was neutral. Any broader HLE region must retain
    intermediate scheduler/interrupt checks as well as complete register/memory
    residue and dynamic cycle accounting.
-4. Capture audio or perform a supervised listening pass before claiming that
+5. Capture audio or perform a supervised listening pass before claiming that
    game-speed improvement preserves pacing.
-5. Exercise additional heavy matches/stages; this one savestate is not a
+6. Exercise additional heavy matches/stages; this one savestate is not a
    whole-game correctness result.
-6. Re-profile every retained material change and perform final LTO-on versus
+7. Re-profile every retained material change and perform final LTO-on versus
    LTO-off A/B only after representative gameplay is full speed.

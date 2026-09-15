@@ -702,6 +702,20 @@ void loadGameSpecificSettings()
 	// Reload per-game settings
 	config::Settings::instance().load(true);
 
+#ifdef __vita__
+	// MVC2's widescreen cheat stretches 2D presentation and HUD elements. This
+	// game-specific Vita build targets the original 4:3 presentation even when
+	// an existing global or per-game configuration enabled widescreen options.
+	if (settings.platform.isConsole() && settings.content.gameId == "T1212N")
+	{
+		config::Widescreen.override(false);
+		config::SuperWidescreen.override(false);
+		config::WidescreenGameHacks.override(false);
+		config::ScreenStretching.override(100);
+		NOTICE_LOG(BOOT, "Forcing 4:3 presentation for Marvel vs. Capcom 2");
+	}
+#endif
+
 	// The product id is now known. Candidate bytes are verified lazily when
 	// their first SH4 block is compiled.
 	hle_Init();

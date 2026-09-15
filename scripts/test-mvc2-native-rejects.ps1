@@ -5,7 +5,7 @@ param(
     [string]$Target = '39829e00451207db324731441501004d',
     [string]$ReplayConfig = 'build-vita/workloads/marvel-vs-capcom-2/experiments/native-reject.cfg',
     [string]$ValidationConfig = 'build-vita/workloads/marvel-vs-capcom-2/experiments/native-reject-validate.cfg',
-    [string]$Mutator = 'build-vita/test-mvc2-native-cache.exe',
+    [string]$Mutator = 'build-vita-tools/test-mvc2-native-cache.exe',
     [string]$RunPrefix = 'mvc2-native-reject',
     [uint64]$ExpectedFirstRtc = 1988906533,
     [int]$ExpectedGuestRenders = -1,

@@ -440,6 +440,55 @@ static void recSh4_Term()
 }
 
 #if defined(__vita__) && FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_ARM
+// Compile a previously observed guest entry with the current backend. The
+// portable cache has already verified the guest bytes. No cached host code or
+// executable address is reused here.
+Mvc2PortableWarmResult rdv_PrewarmPortableBlock(u32 guestPc, u32 fpuMode)
+{
+	if (bm_GetBlock(guestPc) != nullptr)
+		return Mvc2PortableWarmResult::Existing;
+	if (emit_FreeSpace() < mvc2_native::MaxBlockBytes
+			|| smc_hotspots.find(guestPc) != smc_hotspots.end())
+		return Mvc2PortableWarmResult::NoSpace;
+
+	Sh4Context savedContext;
+	memcpy(&savedContext, &Sh4cntx, sizeof(savedContext));
+	fpscr_t mode;
+	mode.full = fpuMode;
+	RuntimeBlockInfo* fresh = ngen_AllocateBlock();
+	bool setup = false;
+	bool compiled = false;
+	try
+	{
+		setup = fresh->Setup(guestPc, mode);
+		if (setup)
+		{
+			fresh->blockcheck_failures = 0;
+			fresh->staging_runs = 100;
+			ngen_Compile(fresh, !fresh->read_only,
+				(guestPc & 0xFFFFFF) == 0x08300 || (guestPc & 0xFFFFFF) == 0x10000,
+				false, true);
+			bm_AddBlock(fresh);
+			fresh = nullptr; // ownership transferred to the block manager
+			compiled = true;
+		}
+	}
+	catch (...)
+	{
+		WARN_LOG(DYNAREC, "mvc2-portable: prewarm threw pc=%08X", guestPc);
+	}
+	if (fresh != nullptr)
+	{
+		if (setup)
+			fresh->Discard();
+		delete fresh;
+	}
+	memcpy(&Sh4cntx, &savedContext, sizeof(savedContext));
+	return compiled
+		? Mvc2PortableWarmResult::Compiled
+		: Mvc2PortableWarmResult::DecodeFailed;
+}
+
 // Diagnostic-only execution path: regenerate at the original address, compare,
 // then restore every byte before any guest code can run. Never advance the SH4.
 bool rdv_ValidateNativeBlock(const mvc2_native::Record& entry)
@@ -456,7 +505,9 @@ bool rdv_ValidateNativeBlock(const mvc2_native::Record& entry)
 	try
 	{
 		fresh = ngen_AllocateBlock();
-		setup = fresh->Setup(entry.guestPc, fpscr);
+		fpscr_t mode;
+		mode.full = entry.fpuMode;
+		setup = fresh->Setup(entry.guestPc, mode);
 		if (setup)
 		{
 			emit_ptr = (u32*)destination;
@@ -468,9 +519,10 @@ bool rdv_ValidateNativeBlock(const mvc2_native::Record& entry)
 				&& fresh->host_opcodes == entry.hostOps
 				&& (u32)fresh->BlockType == entry.endType && fresh->BranchBlock == entry.branchPc
 				&& fresh->NextBlock == entry.nextPc && fresh->relink_offset == entry.relinkOffset
-				&& ((fresh->has_fpu_op ? mvc2_native::HasFpuOp : 0u)
+				&& (((fresh->has_fpu_op ? mvc2_native::HasFpuOp : 0u)
 						| (fresh->has_jcond ? mvc2_native::HasJcond : 0u)
-						| (entry.flags & mvc2_native::NeedsSmcCheck)) == entry.flags
+						| (entry.flags & mvc2_native::NeedsSmcCheck))
+					== (entry.flags & mvc2_native::CodegenFlags))
 				&& memcmp(destination, backup.data(), entry.size) == 0;
 		}
 	}
