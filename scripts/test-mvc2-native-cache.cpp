@@ -38,33 +38,54 @@ static void inspectPortable(const std::vector<uint8_t>& data) {
         throw std::runtime_error("portable header truncated");
     PortableHeader header;
     memcpy(&header, data.data(), sizeof(header));
+    const bool legacy = header.version == LegacyPortableVersion;
+    const uint32_t sourceBytes = legacy ? 0 : header.reserved[0];
     const uint64_t expectedSize = sizeof(header)
-        + uint64_t(header.count) * sizeof(PortableRecord);
+        + uint64_t(header.count) * (legacy ? sizeof(LegacyPortableRecord)
+                                           : sizeof(PortableRecord))
+        + sourceBytes;
     if (memcmp(header.magic, "MVC2SH41", 8)
-            || header.version != PortableVersion
+            || (!legacy && header.version != PortableVersion)
             || header.headerSize != sizeof(header)
-            || header.recordSize != sizeof(PortableRecord)
+            || header.recordSize != (legacy ? sizeof(LegacyPortableRecord)
+                                            : sizeof(PortableRecord))
             || header.count > MaxPortableRecords
+            || sourceBytes > MaxPortableSourceBytes
             || header.gameIdentity != PortableGameIdentity
-            || header.reserved[0] || header.reserved[1]
+            || (legacy && header.reserved[0]) || header.reserved[1]
             || header.reserved[2] || header.reserved[3]
             || expectedSize != data.size()
             || header.headerHash != hashPortableHeader(header))
         throw std::runtime_error("portable header checksum/format");
     uint64_t digest = 0;
-    uint32_t exact = 0, writable = 0, duplicateVariants = 0;
+    uint32_t exact = 0, writable = 0, withSource = 0, duplicateVariants = 0;
     std::vector<PortableRecord> records;
     records.reserve(header.count);
     size_t offset = sizeof(header);
     for (uint32_t index = 0; index < header.count; ++index) {
-        PortableRecord record;
-        memcpy(&record, data.data() + offset, sizeof(record));
-        offset += sizeof(record);
+        PortableRecord record{};
+        if (legacy) {
+            LegacyPortableRecord oldRecord;
+            memcpy(&oldRecord, data.data() + offset, sizeof(oldRecord));
+            offset += sizeof(oldRecord);
+            if (!validLegacyPortableRecord(oldRecord, RamMask))
+                throw std::runtime_error("portable v1 record bounds/metadata");
+            digest = XXH64(&oldRecord, sizeof(oldRecord), digest);
+            record = upgradeLegacyPortableRecord(oldRecord);
+        } else {
+            memcpy(&record, data.data() + offset, sizeof(record));
+            offset += sizeof(record);
+            digest = XXH64(&record, sizeof(record), digest);
+        }
         if (!validPortableRecord(record, RamMask))
             throw std::runtime_error("portable record bounds/metadata");
-        digest = XXH64(&record, sizeof(record), digest);
+        if (hasPortableSource(record)
+                && (record.sourceBytes > sourceBytes
+                    || record.sourceOffset > sourceBytes - record.sourceBytes))
+            throw std::runtime_error("portable source range");
         exact += (record.flags & PortableExactSourceHash) != 0;
         writable += (record.flags & PortableWritableSource) != 0;
+        withSource += hasPortableSource(record);
         for (const PortableRecord& previous : records)
             if (samePortableSource(record, previous)) {
                 ++duplicateVariants;
@@ -72,11 +93,20 @@ static void inspectPortable(const std::vector<uint8_t>& data) {
             }
         records.push_back(record);
     }
+    if (sourceBytes)
+        digest = XXH64(data.data() + offset, sourceBytes, digest);
     if (digest != header.payloadHash)
         throw std::runtime_error("portable payload checksum");
-    printf("portable_version=%u records=%u exact_hash=%u page_hash=%u writable=%u duplicate_variants=%u game_identity=%016llx\n",
+    for (const PortableRecord& record : records)
+        if (hasPortableSource(record)
+                && (record.flags & PortableExactSourceHash)
+                && XXH64(data.data() + offset + record.sourceOffset,
+                    record.sourceBytes, 0) != record.sourceHash)
+            throw std::runtime_error("portable exact source hash mismatch");
+    printf("portable_version=%u records=%u exact_hash=%u page_hash=%u writable=%u with_source=%u source_bytes=%u duplicate_variants=%u game_identity=%016llx\n",
         header.version, header.count, exact, header.count - exact, writable,
-        duplicateVariants, (unsigned long long)header.gameIdentity);
+        withSource, sourceBytes, duplicateVariants,
+        (unsigned long long)header.gameIdentity);
 }
 
 static void selfTest() {
@@ -127,6 +157,7 @@ static void selfTest() {
     assert(targetsMovableCode(Relocation{0, codeBase + 4096}, codeBase, 4096, Capacity));
     assert(!targetsMovableCode(Relocation{0, codeBase + Capacity}, codeBase, 4096, Capacity));
     PortableRecord portable{};
+    portable.sourceOffset = NoPortableSource;
     portable.guestPc = 0x8c010000;
     portable.fpuMode = 0x00040001;
     portable.guestBytes = 16;

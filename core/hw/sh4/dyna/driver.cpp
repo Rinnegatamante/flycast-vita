@@ -127,7 +127,7 @@ const char* RuntimeBlockInfo::hash()
 	return block_hash;
 }
 
-bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
+bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg, bool forceWritable)
 {
 	staging_runs=addr=lookups=runs=host_code_size=0;
 	guest_cycles=guest_opcodes=host_opcodes=0;
@@ -166,7 +166,7 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
 		Do_Exception(rpc, ex.expEvn);
 		return false;
 	}
-	SetProtectedFlags();
+	SetProtectedFlags(forceWritable);
 
 	{
 		FT_SCOPE(Emu, Analyse, rpc);
@@ -185,11 +185,13 @@ DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
 		recSh4_ClearCache();
 
 	if (blockcheck_failures == 0 && smc_hotspots.find(pc) == smc_hotspots.end())
+	{
 		if (RuntimeBlockInfo* cached = mvc2NativeCacheLookup(pc, fpscr.full))
 		{
 			bm_AddBlock(cached);
 			return cached->code;
 		}
+	}
 
 	RuntimeBlockInfo* rbi = ngen_AllocateBlock();
 
@@ -444,11 +446,14 @@ static void recSh4_Term()
 // portable cache has already verified the guest bytes. No cached host code or
 // executable address is reused here.
 Mvc2PortableWarmResult rdv_PrewarmPortableBlock(
-    const mvc2_native::PortableRecord& source, bool stageFpuBlock)
+    const mvc2_native::PortableRecord& source, bool stageFpuBlock,
+    const u8* storedSource)
 {
 	const u32 guestPc = source.guestPc;
 	const u32 fpuMode = source.fpuMode;
-	if (bm_GetBlock(guestPc) != nullptr)
+	// Stored writable variants coexist with the currently published block and
+	// are selected later by exact source/FPSCR identity.
+	if (storedSource == nullptr && bm_GetBlock(guestPc) != nullptr)
 		return Mvc2PortableWarmResult::Existing;
 	if (emit_FreeSpace() < mvc2_native::MaxBlockBytes
 			|| smc_hotspots.find(guestPc) != smc_hotspots.end())
@@ -458,13 +463,42 @@ Mvc2PortableWarmResult rdv_PrewarmPortableBlock(
 	memcpy(&savedContext, &Sh4cntx, sizeof(savedContext));
 	fpscr_t mode;
 	mode.full = fpuMode;
-	RuntimeBlockInfo* fresh = ngen_AllocateBlock();
+	std::vector<u8> guestBackup;
+	bool relock[mvc2_native::MaxPages] = {};
+	const u32 guestOffset = guestPc & RAM_MASK;
+	if (storedSource != nullptr)
+	{
+		try
+		{
+			guestBackup.assign(mem_b.data + guestOffset,
+				mem_b.data + guestOffset + source.guestBytes);
+		}
+		catch (...)
+		{
+			memcpy(&Sh4cntx, &savedContext, sizeof(savedContext));
+			return Mvc2PortableWarmResult::DecodeFailed;
+		}
+		u32 pageAddress = guestPc & ~4095u;
+		for (u32 page = 0; page < source.pageCount; ++page, pageAddress += 4096)
+		{
+			relock[page] = bm_IsRamPageProtected(pageAddress);
+			if (relock[page])
+				bm_UnlockPage(pageAddress);
+		}
+		memcpy(mem_b.data + guestOffset, storedSource, source.guestBytes);
+	}
+	RuntimeBlockInfo* fresh = nullptr;
 	bool setup = false;
+	bool decoded = false;
 	bool compiled = false;
 	bool staged = false;
 	try
 	{
-		setup = fresh->Setup(guestPc, mode);
+		fresh = ngen_AllocateBlock();
+		setup = fresh->Setup(guestPc, mode, storedSource != nullptr);
+		decoded = setup;
+		if (setup && fresh->sh4_code_size != source.guestBytes)
+			setup = false;
 		if (setup)
 		{
 			fresh->blockcheck_failures = 0;
@@ -472,7 +506,7 @@ Mvc2PortableWarmResult rdv_PrewarmPortableBlock(
 			ngen_Compile(fresh, !fresh->read_only,
 				(guestPc & 0xFFFFFF) == 0x08300 || (guestPc & 0xFFFFFF) == 0x10000,
 				false, true);
-			if (stageFpuBlock && fresh->has_fpu_op)
+			if (storedSource != nullptr || (stageFpuBlock && fresh->has_fpu_op))
 			{
 				// Keep the emitted variant out of the single-entry-per-PC map
 				// until the matching FPSCR mode actually requests it.
@@ -494,9 +528,17 @@ Mvc2PortableWarmResult rdv_PrewarmPortableBlock(
 	}
 	if (fresh != nullptr)
 	{
-		if (setup)
+		if (decoded)
 			fresh->Discard();
 		delete fresh;
+	}
+	if (storedSource != nullptr)
+	{
+		memcpy(mem_b.data + guestOffset, guestBackup.data(), source.guestBytes);
+		u32 pageAddress = guestPc & ~4095u;
+		for (u32 page = 0; page < source.pageCount; ++page, pageAddress += 4096)
+			if (relock[page])
+				bm_LockPage(pageAddress);
 	}
 	memcpy(&Sh4cntx, &savedContext, sizeof(savedContext));
 	if (staged)

@@ -1808,35 +1808,106 @@ shipping initial staging yet. The remaining static-prewarm limitation is
 concrete: portable v1 stores source fingerprints but not the SH4 bytes needed
 to compile an overlay before the game generates it.
 
+### Portable v2 writable overlays and beta 4, 2026-09-16
+
+Portable coverage format v2 adds bounded raw guest SH4 source bytes only for
+exact writable variants. The source payload is capped at 10 MiB. It does not
+contain ARM code, host addresses, backend layout, a Flycast build ID or other
+executable-specific state. A new Flycast executable still compiles those SH4
+bytes through its current backend. The loader remains compatible with v1, and
+the offline packer merges v1/v2 coverage and native shards while preferring
+source-bearing candidates and rejecting conflicting SH4 bytes.
+
+The target collector writes the incremental, executable-independent artifact
+`ux0:data/flycast/data/mvc2_portable_training.bin`. Initial prewarm can install
+stored SH4 bytes temporarily, compile the writable block with Reduced-SMC
+checks, restore guest RAM immediately and keep the compiled variant staged
+until the exact source, protection class, FPSCR and `SR.FD` state occurs.
+Staged variants are bounded by the loaded coverage and are deleted on reset.
+
+The first implementation wrongly discarded a staged candidate when the source
+already matched but the page had not yet transitioned from protected to
+writable. Instrumentation found 18 protection-class mismatches and zero source
+or FPU-state mismatches. Retaining those candidates, while repeating every
+exact check on lookup, allowed them to become valid one frame later. The final
+trace is under
+`build-vita-stutter-trace/devkit-logs/mvc2-portable-v2-retain-staged25/20260916-104113/`.
+Frame 213 used all 20 prepared blocks and spent 0.315 ms in compile scope;
+frame 214 used all 40 and spent 0.527 ms. Before v2, frame 214 spent about
+10.515 ms compiling. Frame 306 already uses all 17 prepared blocks and spends
+about 0.889 ms in compile scope; its remaining 34.624 ms wall time is therefore
+render/texture work, not a JIT-compilation stall.
+
+The canonical merged cache contains 16,304 records, 420 exact writable
+variants and 177 variants with 2,558 stored SH4 bytes. Its SHA256 is
+`A0440CBB83786953C924ABBA67B42CAEA5E89616201AA760B2D97CDA1E484801`.
+There are no duplicate variants. The initial target pass prepared 118
+current-mode and 59 mode-independent source-bearing records and ultimately
+served 507 staged hits. The final counters reported 18 retained protection
+skips and zero source or FPU skips.
+
+Three LTO-off Release runs of the same savestate segment are under
+`build-vita-cache-normal/devkit-logs/mvc2-portable-v2-retain-staged-release/20260916-104623/`.
+They completed 16 guest seconds and 800 renders in 16.021, 16.002 and 15.997
+wall seconds, for ratios 0.998689, 0.999875 and 1.000188. The median is
+0.999875x. This demonstrates full speed only for this captured fight segment;
+it is not evidence for every team, stage or between-fight transition.
+
+Beta 4 removes build-specific native-cache collection and ships the portable
+v2 collector, the canonical cache, Reduced SMC, forced 4:3 and ATTRIBUTE2=12.
+The first beta-4 archive exposed a collector bug: an unrepresentable block at
+`a0000000` was reported as capacity exhaustion and stopped collection at 177
+records despite the 10 MiB limit. Invalid blocks are now skipped; only the
+actual record/source ceiling saturates the collector. The 145-second cold-boot
+checkpoint under
+`build-vita-cache-normal/devkit-logs/mvc2-beta4-collector-growth/20260916-105737/`
+grew the training shard from 177 to 1,531 records and from 2,558 to 24,244
+source bytes, with `saturated=0` and `io_error=0`.
+Merging that real shard with the canonical cache produced 17,003 unique
+records, 461 writable variants and 429 useful source-bearing variants with
+6,002 source bytes; redundant read-only source payload was discarded and the
+inspector reported zero duplicate variants.
+
+The corrected archive is
+`build-vita-cache-normal/mvc2-beta-collector-beta4-portable2-collectorfix.zip`,
+SHA256
+`54E0341D4B1FF1940681B65F6E2104336550D0F4C4A6565D8262DD41F4E2F427`.
+It supersedes `mvc2-beta-collector-beta4-portable2.zip`. The packaged ELF GNU
+build ID is `580adf845df5e347dd20f86b87f2a38196c04f4d`. Source bytes are retained
+only for exact writable/SMC variants, and record/source capacity grows in
+bounded increments rather than reserving the 10 MiB ceiling at boot. A final
+40-second cold-boot smoke is under
+`build-vita-cache-normal/devkit-logs/mvc2-beta4-collector-final-smoke/20260916-110556/`.
+Testers return
+`mvc2_portable_training.bin` and `flycast.log`; changing Flycast does not
+invalidate or require re-dumping the portable training file.
+
 ## Next evidence gate
 
-1. Distribute beta 3 across played matches, stages, character teams and
-   between-fight transitions. Keep each cache/log/savestate as a separate
-   artifact. Convert all valid v3 shards, including shards from later Flycast
-   executables, with `mvc2-aot-pack --coverage-output`; the portable coverage
-   file is canonical. Use `--output` only when deliberately producing a
-   disposable native pack from shards with one exact native identity.
-2. Extend portable coverage with bounded exact SH4 source bytes for writable
-   overlays. Compile them against a temporary, restored guest-memory view and
-   keep the result staged until the exact source/protection state appears.
-   This remains executable-independent; never serialize host code or host
-   addresses into the canonical cache.
+1. Distribute only beta 4 `collectorfix` across played matches, stages,
+   character teams and between-fight transitions. Keep each portable training
+   file, log and useful savestate as a separate artifact rather than
+   overwriting the evidence.
+2. Merge returned v2 training files with `mvc2-aot-pack --coverage-output`,
+   inspect the coverage report and issue updated canonical caches. Never put
+   host code or host addresses in this canonical artifact.
 3. Add compile cost and phase/first-use priority to portable coverage, then
    replace or reinforce the render-cadence heuristic with an explicit safe
-   MvC2 loading/transition signal. Do not increase the 2 ms beta budget until
-   low-render gameplay intervals are proven not to be false positives.
+   MvC2 loading/transition signal. Do not increase the 2 ms gameplay budget
+   until low-render gameplay intervals are proven not to be false positives.
 4. Instrument actual Reduced-SMC failures and writable-page invalidations over
    fight transitions before implementing an adaptive policy. Do not infer hot
    SMC blocks from ordinary JIT compilation events.
-5. For sustained execution cost, retain the post-division profile. The vertex cluster
-   still needs an algorithmic/vector or data-movement improvement; merely
-   translating its small emission block to C++ lost performance, and removing
-   `make_index` validation was neutral. Any broader HLE region must retain
-   intermediate scheduler/interrupt checks as well as complete register/memory
-   residue and dynamic cycle accounting.
-6. Capture audio or perform a supervised listening pass before claiming that
+5. Profile residual non-JIT spikes such as frame 306 in the renderer/texture
+   path. The measured `make_index` validation removal was neutral; do not carry
+   it without new evidence. Any broader HLE region must retain intermediate
+   scheduler/interrupt checks plus complete register/memory residue and
+   dynamic cycle accounting.
+6. Run longer correctness tests across stage and fight transitions, including
+   the Reduced-SMC path, and capture audio or perform a supervised listening
+   pass before claiming that
    game-speed improvement preserves pacing.
 7. Exercise additional heavy matches/stages; this one savestate is not a
-   whole-game correctness result.
+   whole-game full-speed or correctness result.
 8. Re-profile every retained material change and perform final LTO-on versus
    LTO-off A/B only after representative gameplay is full speed.

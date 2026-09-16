@@ -51,12 +51,20 @@ try {
         for ($variant = 0; $variant -lt $configPaths.Count; ++$variant) {
             $label = "$pair-$($Labels[$variant])"
             if ((Get-FileHash -LiteralPath (Join-Path $build 'eboot.bin')).Hash -ne $binaryHash) { throw 'Executable changed during A/B' }
+            $beforeLogPath = Join-Path $evidence "$label-before.log"
+            $beforeLogText = ''
             Connect-Devkit
             try {
                 Copy-Devkit $configPaths[$variant] 'ux0:data/flycast/emu.cfg'
                 $readback = Join-Path $evidence "$label.cfg"
                 Copy-Devkit 'ux0:data/flycast/emu.cfg' $readback
                 if ((Get-FileHash -LiteralPath $readback).Hash -ne (Get-FileHash -LiteralPath $configPaths[$variant]).Hash) { throw 'Config mismatch' }
+                & $ctrl cp 'ux0:data/flycast/data/flycast.log' $beforeLogPath
+                if ($LASTEXITCODE -eq 0) {
+                    $beforeLogText = Get-Content -LiteralPath $beforeLogPath -Raw
+                } else {
+                    Remove-Item -LiteralPath $beforeLogPath -Force -ErrorAction SilentlyContinue
+                }
             } finally { & $ctrl disconnect $Target | Out-Null }
             for ($attempt = 0; $attempt -lt 3; ++$attempt) {
                 try {
@@ -71,7 +79,17 @@ try {
             $logPath = Join-Path $evidence "$label.log"
             try { Copy-Devkit 'ux0:data/flycast/data/flycast.log' $logPath }
             finally { & $ctrl disconnect $Target | Out-Null }
-            $lastRun = ([regex]::Split((Get-Content -LiteralPath $logPath -Raw), '(?m)(?=^\d\d:\d\d:\d\d\d .*Auto-starting content ux0:data/marvel/)'))[-1]
+            $logText = Get-Content -LiteralPath $logPath -Raw
+            if ($beforeLogText -and $logText -eq $beforeLogText) {
+                throw 'Flycast did not append a new log section; refusing stale measurements'
+            }
+            if ($beforeLogText -and $logText.StartsWith($beforeLogText, [StringComparison]::Ordinal)) {
+                $newLogText = $logText.Substring($beforeLogText.Length)
+                if ($newLogText -notmatch '(?m)^\d\d:\d\d:\d\d\d .*Auto-starting content ux0:data/marvel/') {
+                    throw 'No new MVC2 boot section after launch; refusing stale measurements'
+                }
+            }
+            $lastRun = ([regex]::Split($logText, '(?m)(?=^\d\d:\d\d:\d\d\d .*Auto-starting content ux0:data/marvel/)'))[-1]
             $readbackText = Get-Content -LiteralPath $readback -Raw
             if ($readbackText -match '(?m)^Mvc2NativeCacheRecord\s*=\s*yes\s*$') {
                 $nativeSaves = @([regex]::Matches($lastRun, 'mvc2-native: saved=\d+(?: base=\d+ added=\d+)?(?: relocations=\d+)? bytes=\d+ saturated=\d+ io_error=0 header_hash=([0-9a-f]{16})'))
@@ -90,6 +108,38 @@ try {
                     if ($nativeBytes.Length -lt 104) { throw 'Native cache export is truncated' }
                     if (([BitConverter]::ToUInt64($nativeBytes, 72).ToString('x16')) -ne $nativeSaves[-1].Groups[1].Value) {
                         throw 'Native cache does not match this recording'
+                    }
+                }
+            }
+            if ($readbackText -match '(?m)^Mvc2PortableCacheRecord\s*=\s*yes\s*$') {
+                $portableSaves = @([regex]::Matches($lastRun, 'mvc2-portable-training: saved=(\d+) source_bytes=(\d+) saturated=\d+ io_error=0'))
+                if ($portableSaves.Count -eq 0) {
+                    if ($lastRun -notmatch 'mvc2-portable-training: recording base=\d+ source_bytes=\d+') {
+                        throw 'Portable SH4 training export missing or failed'
+                    }
+                    Write-Warning 'Portable training was unchanged; pulling the existing incremental artifact'
+                }
+                $portablePath = Join-Path $evidence "$label-portable-training.bin"
+                Connect-Devkit
+                try { Copy-Devkit 'ux0:data/flycast/data/mvc2_portable_training.bin' $portablePath }
+                finally { & $ctrl disconnect $Target | Out-Null }
+                $portableBytes = [IO.File]::ReadAllBytes($portablePath)
+                $portableMagic = [Text.Encoding]::ASCII.GetString($portableBytes, 0, [Math]::Min(8, $portableBytes.Length))
+                $portableVersion = if ($portableBytes.Length -ge 12) { [BitConverter]::ToUInt32($portableBytes, 8) } else { 0 }
+                $portableRecordSize = if ($portableBytes.Length -ge 20) { [BitConverter]::ToUInt32($portableBytes, 16) } else { 0 }
+                if (($portableBytes.Length -lt 64) -or ($portableMagic -ne 'MVC2SH41') -or ($portableVersion -ne 2) -or ($portableRecordSize -ne 72)) {
+                    throw 'Portable SH4 training header is invalid'
+                }
+                $portableCount = [BitConverter]::ToUInt32($portableBytes, 20)
+                $portableSourceBytes = [BitConverter]::ToUInt32($portableBytes, 48)
+                if ($portableBytes.Length -ne (64 + 72 * $portableCount + $portableSourceBytes)) {
+                    throw 'Portable SH4 training file does not match this checkpoint'
+                }
+                if ($portableSaves.Count -gt 0) {
+                    $loggedPortableCount = [Convert]::ToUInt32($portableSaves[-1].Groups[1].Value)
+                    $loggedPortableSourceBytes = [Convert]::ToUInt32($portableSaves[-1].Groups[2].Value)
+                    if (($portableCount -ne $loggedPortableCount) -or ($portableSourceBytes -ne $loggedPortableSourceBytes)) {
+                        throw 'Portable SH4 training file does not match this checkpoint'
                     }
                 }
             }

@@ -3,7 +3,7 @@ param(
     [string]$BuildDir = 'build-vita-cache-normal',
     [Parameter(Mandatory)] [string]$PortableCache,
     [string]$Config = 'scripts/mvc2-pal-beta-collector.cfg',
-    [string]$Version = 'beta3-portable1',
+    [string]$Version = 'beta4-portable2',
     [string]$Output = ''
 )
 
@@ -68,13 +68,15 @@ $configText = Get-Content -LiteralPath $configPath -Raw
 $requiredConfig = @(
     '(?m)^Dreamcast\.AutoStartContent\s*=\s*ux0:data/marvel/Marvel vs\. Capcom 2 v1\.001 \(2000\)\(Capcom\)\(NTSC\)\(US\)\[!\]\.gdi\s*$',
     '(?m)^Dynarec\.smcChecks\s*=\s*1\s*$',
-    '(?m)^Mvc2NativeCache\s*=\s*yes\s*$',
+    '(?m)^Mvc2NativeCache\s*=\s*no\s*$',
     '(?m)^Mvc2AotPack\s*=\s*no\s*$',
     '(?m)^Mvc2PortableCache\s*=\s*yes\s*$',
     '(?m)^Mvc2PortableWarmBudgetUs\s*=\s*2000\s*$',
+    '(?m)^Mvc2PortableInitialWarmBudgetUs\s*=\s*4000000\s*$',
     '(?m)^Mvc2PortableWarmMaxRenders\s*=\s*45\s*$',
-    '(?m)^Mvc2NativeCacheRecord\s*=\s*yes\s*$',
-    '(?m)^Mvc2NativeCacheMerge\s*=\s*yes\s*$',
+    '(?m)^Mvc2NativeCacheRecord\s*=\s*no\s*$',
+    '(?m)^Mvc2NativeCacheMerge\s*=\s*no\s*$',
+    '(?m)^Mvc2PortableCacheRecord\s*=\s*yes\s*$',
     '(?m)^rend\.WideScreen\s*=\s*no\s*$',
     '(?m)^rend\.WidescreenGameHacks\s*=\s*no\s*$',
     '(?m)^rend\.ScreenStretching\s*=\s*100\s*$'
@@ -87,10 +89,12 @@ foreach ($pattern in $requiredConfig) {
 
 $inspection = (& $inspector $portable | Out-String)
 if ($LASTEXITCODE -ne 0 -or
-        $inspection -notmatch 'portable_version=1 records=(\d+).*duplicate_variants=0') {
+        $inspection -notmatch 'portable_version=2 records=(\d+).*with_source=(\d+) source_bytes=(\d+).*duplicate_variants=0') {
     throw 'Portable cache failed format validation'
 }
 $portableRecords = $Matches[1]
+$portableSourceRecords = $Matches[2]
+$portableSourceBytes = $Matches[3]
 $readelf = (Get-Command arm-vita-eabi-readelf -ErrorAction Stop).Source
 $buildNote = (& $readelf -n $elf | Out-String)
 if ($LASTEXITCODE -ne 0 -or $buildNote -notmatch 'Build ID:\s*([0-9a-f]{40})') {
@@ -122,22 +126,22 @@ try {
 Marvel vs. Capcom 2 - Flycast Vita portable cache collector $Version
 Build ID: $buildId
 Portable coverage: $portableRecords SH4 source records
+Stored writable variants: $portableSourceRecords records / $portableSourceBytes bytes
 
 Required game image
   ux0:data/marvel/Marvel vs. Capcom 2 v1.001 (2000)(Capcom)(NTSC)(US)[!].gdi
 
 What is build-independent
-- mvc2_portable_cache.bin contains guest SH4 addresses, modes, lengths and
-  source fingerprints only. It contains no ARM code, host address or Flycast
-  build ID.
+- mvc2_portable_cache.bin contains guest SH4 identity plus bounded raw SH4
+  bytes for dynamic writable variants. It contains no ARM code, host address
+  or Flycast build ID.
 - A changed Flycast executable recompiles those entries with its current
   dynarec. Gameplay does not need to be replayed merely because Flycast changed.
-- mvc2_native_cache.bin is still a per-build collection shard. Return it to the
-  maintainer; cross-build shards are converted and merged into the portable
-  coverage file offline.
+- mvc2_portable_training.bin is an executable-independent incremental shard.
+  Multiple tester shards are merged into the portable coverage file offline.
 
 Install
-1. Back up any existing mvc2_native_cache.bin and flycast.log.
+1. Back up any existing mvc2_portable_training.bin and flycast.log.
 2. Install Flycast-MVC2-$Version.vpk.
 3. Copy emu.cfg to ux0:data/flycast/emu.cfg.
 4. Copy mvc2_portable_cache.bin to
@@ -154,11 +158,12 @@ Test procedure
   slightly exceed the soft time budget during an eligible transition.
 - The MVC2 build forces the original 4:3 presentation and disables the
   widescreen game-memory cheat, including when an older config enabled it.
-- The native collection shard is checkpointed atomically every 120 seconds.
+- The portable v2 shard is checkpointed atomically every 120 seconds and its
+  stored SH4 source payload is capped at 10 MiB.
 - After the last scene, leave the game running for at least 140 seconds.
 
 Return these files
-  ux0:data/flycast/data/mvc2_native_cache.bin
+  ux0:data/flycast/data/mvc2_portable_training.bin
   ux0:data/flycast/data/flycast.log
   any crash XML/core dump or savestate reproducing a visible stutter
   a short note with stage, teams and transitions tested

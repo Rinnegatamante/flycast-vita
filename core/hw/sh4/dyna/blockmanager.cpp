@@ -643,12 +643,18 @@ void RuntimeBlockInfo::Discard()
 	}
 }
 
-void RuntimeBlockInfo::SetProtectedFlags()
+void RuntimeBlockInfo::SetProtectedFlags(bool forceWritable)
 {
 #ifdef TARGET_NO_EXCEPTIONS
 	this->read_only = false;
 	return;
 #endif
+	if (forceWritable)
+	{
+		this->read_only = false;
+		unprotected_blocks++;
+		return;
+	}
 	// Don't write protect rom and BIOS/IP.BIN (Grandia II)
 	if (!IsOnRam(addr) || (addr & 0x1FFF0000) == 0x0c000000)
 	{

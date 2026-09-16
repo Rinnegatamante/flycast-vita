@@ -23,7 +23,8 @@ bool rdv_ValidateNativeBlock(const mvc2_native::Record& record);
 void mvc2NativeCacheStagePortableBlock(RuntimeBlockInfo* block,
                                        const mvc2_native::PortableRecord& source);
 Mvc2PortableWarmResult rdv_PrewarmPortableBlock(
-    const mvc2_native::PortableRecord& source, bool stageFpuBlock = false);
+    const mvc2_native::PortableRecord& source, bool stageFpuBlock = false,
+    const u8* storedSource = nullptr);
 #else
 inline void mvc2NativeCacheBegin() {}
 inline void mvc2NativeCacheReset() {}

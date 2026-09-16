@@ -19,7 +19,7 @@ struct RuntimeBlockInfo_Core
 
 struct RuntimeBlockInfo: RuntimeBlockInfo_Core
 {
-	bool Setup(u32 pc,fpscr_t fpu_cfg);
+	bool Setup(u32 pc,fpscr_t fpu_cfg, bool forceWritable = false);
 	const char* hash();
 
 	u32 vaddr;
@@ -70,7 +70,7 @@ struct RuntimeBlockInfo: RuntimeBlockInfo_Core
 	void RemRef(const RuntimeBlockInfoPtr& other);
 
 	void Discard();
-	void SetProtectedFlags();
+	void SetProtectedFlags(bool forceWritable = false);
 
 	bool read_only;
 };

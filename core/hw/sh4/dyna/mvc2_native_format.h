@@ -14,8 +14,11 @@ constexpr uint32_t MaxBlockBytes = 16 * 1024;
 constexpr uint32_t MaxPages = 4;
 constexpr uint32_t MaxRelocations = 1024;
 constexpr uint32_t MaxTotalRelocations = 1000000;
-constexpr uint32_t PortableVersion = 1;
+constexpr uint32_t LegacyPortableVersion = 1;
+constexpr uint32_t PortableVersion = 2;
 constexpr uint32_t MaxPortableRecords = 100000;
+constexpr uint32_t MaxPortableSourceBytes = 10 * 1024 * 1024;
+constexpr uint32_t NoPortableSource = UINT32_MAX;
 // Little-endian bytes are "MVC2US1\1". This format is intentionally tied to
 // Marvel vs. Capcom 2 US v1.001, but not to a Flycast executable or backend.
 constexpr uint64_t PortableGameIdentity = UINT64_C(0x013153553243564d);
@@ -67,22 +70,43 @@ struct PortableHeader {
     uint64_t gameIdentity, payloadHash, headerHash;
     uint32_t reserved[4];
 };
+struct LegacyPortableRecord {
+    uint32_t guestPc, fpuMode, guestBytes, flags;
+    uint32_t pageCount, reserved;
+    uint64_t sourceHash;
+    uint64_t pageHash[MaxPages];
+};
 struct PortableRecord {
     uint32_t guestPc, fpuMode, guestBytes, flags;
     uint32_t pageCount, reserved;
     uint64_t sourceHash;
     uint64_t pageHash[MaxPages];
+    uint32_t sourceOffset, sourceBytes;
 };
 static_assert(sizeof(Header) == 104, "cache header ABI");
 static_assert(sizeof(LegacyRecord) == 96, "legacy cache record ABI");
 static_assert(sizeof(Record) == 104, "cache record ABI");
 static_assert(sizeof(Relocation) == 8, "cache relocation ABI");
 static_assert(sizeof(PortableHeader) == 64, "portable header ABI");
-static_assert(sizeof(PortableRecord) == 64, "portable record ABI");
+static_assert(sizeof(LegacyPortableRecord) == 64, "portable v1 record ABI");
+static_assert(sizeof(PortableRecord) == 72, "portable v2 record ABI");
 inline Record upgradeLegacyRecord(const LegacyRecord& legacy) {
     Record record{};
     memcpy(static_cast<LegacyRecord*>(&record), &legacy, sizeof(legacy));
     record.flags |= FixedOffset;
+    return record;
+}
+inline PortableRecord upgradeLegacyPortableRecord(const LegacyPortableRecord& legacy) {
+    PortableRecord record{};
+    record.guestPc = legacy.guestPc;
+    record.fpuMode = legacy.fpuMode;
+    record.guestBytes = legacy.guestBytes;
+    record.flags = legacy.flags;
+    record.pageCount = legacy.pageCount;
+    record.reserved = legacy.reserved;
+    record.sourceHash = legacy.sourceHash;
+    memcpy(record.pageHash, legacy.pageHash, sizeof(record.pageHash));
+    record.sourceOffset = NoPortableSource;
     return record;
 }
 inline bool sameSourceVariant(const Record& left, const Record& right) {
@@ -99,16 +123,29 @@ inline bool validPortableRecord(const PortableRecord& entry, uint32_t ramMask) {
     if ((entry.guestPc & 1) || (entry.guestPc & 0x1f000000) != 0x0c000000
             || !entry.guestBytes || (entry.guestBytes & 1) || entry.guestBytes > 8192
             || entry.guestBytes > ramMask + 1 - (entry.guestPc & ramMask)
-            || (entry.flags & ~PortableFlags) || entry.reserved)
+            || (entry.flags & ~PortableFlags) || entry.reserved
+            || (entry.sourceOffset == NoPortableSource
+                ? entry.sourceBytes != 0
+                : entry.sourceBytes != entry.guestBytes
+                    || entry.sourceOffset > MaxPortableSourceBytes - entry.sourceBytes))
         return false;
     const uint32_t pages = ((entry.guestPc & 4095) + entry.guestBytes + 4095) / 4096;
     return pages == entry.pageCount && pages && pages <= MaxPages;
 }
+inline bool validLegacyPortableRecord(const LegacyPortableRecord& legacy,
+                                      uint32_t ramMask) {
+    return validPortableRecord(upgradeLegacyPortableRecord(legacy), ramMask);
+}
+inline bool hasPortableSource(const PortableRecord& entry) {
+    return entry.sourceOffset != NoPortableSource;
+}
 inline bool samePortableSource(const PortableRecord& left, const PortableRecord& right) {
-    return left.guestPc == right.guestPc && left.fpuMode == right.fpuMode
-        && left.guestBytes == right.guestBytes && left.flags == right.flags
-        && left.pageCount == right.pageCount && left.sourceHash == right.sourceHash
-        && memcmp(left.pageHash, right.pageHash, sizeof(left.pageHash)) == 0;
+    if (left.guestPc != right.guestPc || left.fpuMode != right.fpuMode
+            || left.guestBytes != right.guestBytes || left.flags != right.flags
+            || left.pageCount != right.pageCount || left.sourceHash != right.sourceHash)
+        return false;
+    return (left.flags & PortableExactSourceHash)
+        || memcmp(left.pageHash, right.pageHash, sizeof(left.pageHash)) == 0;
 }
 inline bool validRecord(const Record& entry, uint32_t prefix, uint32_t previousEnd,
                         uint32_t codeCapacity, uint32_t ramMask) {

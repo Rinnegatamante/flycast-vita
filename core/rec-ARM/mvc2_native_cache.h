@@ -9,6 +9,7 @@ static std::vector<Record> loaded, learned;
 static std::vector<Relocation> loadedRelocations, learnedRelocations;
 static std::vector<u8> loadedCode, learnedCode, consumed;
 static std::vector<PortableRecord> portableRecords;
+static std::vector<u8> portableSources;
 static std::vector<u8> portableDone;
 struct KeyHash {
     size_t operator()(u64 key) const { return hashKey32(key); }
@@ -19,7 +20,12 @@ struct StagedPortableBlock {
 };
 static std::unordered_multimap<u64, size_t, KeyHash> blockIndex;
 static std::unordered_multimap<u64, StagedPortableBlock, KeyHash> stagedPortableBlocks;
+static std::vector<PortableRecord> portableTrainingRecords;
+static std::vector<u8> portableTrainingSources;
+static std::unordered_multimap<u64, size_t, KeyHash> portableTrainingIndex;
 static bool initialized, enabled, recording, merging, validating, validateHits, reported;
+static bool portableRecording, portableTrainingDirty, portablePrewarming;
+static u32 portableTrainingSaturated, portableTrainingInvalidSkipped;
 static u32 mapGeneration, hits, misses, sourceRejects, usedRejects, duplicateSkips;
 static u32 validated, validationFailures, saturated;
 static int validationTRegister, validationFlagsCondition;
@@ -32,6 +38,8 @@ static u32 portableBudgetUs, portableInitialBudgetUs, portableMaxRenders, portab
 static u32 portableCompiled, portableExisting, portableLastRenderCount;
 static bool portableRenderBaseline, portableInitialWarmDone;
 static u32 portableRejected, portableStaged, portableStagedHits, portableStagedRejects;
+static u32 portableStagedProtectionRejects, portableStagedSourceRejects;
+static u32 portableStagedFpuRejects;
 static u64 portablePageHash[4096];
 static u32 portablePageEpoch[4096], portableEpoch;
 #ifdef VITA_FRAME_TRACE
@@ -40,7 +48,7 @@ static bool testResetDone, testResetPending;
 #endif
 static u64 started, deadline;
 static u32 checkpointSeconds;
-static std::string path;
+static std::string path, portableTrainingPath;
 static constexpr size_t RecordReserveChunk = 12000;
 static constexpr size_t RelocationReserveChunk = 12000;
 static constexpr size_t NativeReserveChunk = 2 * 1024 * 1024;
@@ -187,27 +195,40 @@ static bool portableProtectionMatches(const RuntimeBlockInfo* block)
         readOnly = bm_IsRamPageProtected(address);
     return block->read_only == readOnly;
 }
-static bool readPortableCoverage()
+static bool portableRecordProtectionMatches(const PortableRecord& record)
 {
-    const std::string portablePath = get_writable_data_path("mvc2_portable_cache.bin");
+    bool readOnly = (record.guestPc & 0x1fff0000) != 0x0c000000;
+    for (u32 address = record.guestPc & ~4095u;
+            readOnly && address < record.guestPc + record.guestBytes;
+            address += 4096)
+        readOnly = bm_IsRamPageProtected(address);
+    const bool expectedReadOnly = !(record.flags & PortableWritableSource);
+    return readOnly == expectedReadOnly;
+}
+static bool readPortableFile(const std::string& portablePath,
+                             std::vector<PortableRecord>& records,
+                             std::vector<u8>& sources)
+{
     FILE* file = fopen(portablePath.c_str(), "rb");
-    if (!file) {
-        NOTICE_LOG(DYNAREC, "mvc2-portable: no coverage file; ordinary JIT");
+    if (!file)
         return false;
-    }
     setvbuf(file, nullptr, _IOFBF, 65536);
     PortableHeader header{};
-    bool valid = fread(&header, sizeof(header), 1, file) == 1
+    bool valid = fread(&header, sizeof(header), 1, file) == 1;
+    const bool legacy = valid && header.version == LegacyPortableVersion;
+    const u32 sourceBytes = legacy ? 0 : header.reserved[0];
+    valid = valid
         && !memcmp(header.magic, "MVC2SH41", 8)
-        && header.version == PortableVersion
+        && (legacy || header.version == PortableVersion)
         && header.headerSize == sizeof(header)
-        && header.recordSize == sizeof(PortableRecord)
+        && header.recordSize == (legacy ? sizeof(LegacyPortableRecord)
+                                        : sizeof(PortableRecord))
         && header.count <= MaxPortableRecords
+        && sourceBytes <= MaxPortableSourceBytes
         && header.gameIdentity == PortableGameIdentity
-        && !header.reserved[0] && !header.reserved[1]
-        && !header.reserved[2] && !header.reserved[3]
+        && (legacy ? !header.reserved[0] : true)
+        && !header.reserved[1] && !header.reserved[2] && !header.reserved[3]
         && header.headerHash == portableHeaderHash(header);
-    std::vector<PortableRecord> records;
     u64 digest = 0;
     if (valid) {
         try { records.reserve(std::min<u32>(header.count, 16000)); }
@@ -215,38 +236,241 @@ static bool readPortableCoverage()
     }
     for (u32 index = 0; index < header.count && valid; ++index) {
         PortableRecord record{};
-        valid = fread(&record, sizeof(record), 1, file) == 1
-            && validPortableRecord(record, RAM_MASK);
+        if (legacy) {
+            LegacyPortableRecord oldRecord{};
+            valid = fread(&oldRecord, sizeof(oldRecord), 1, file) == 1
+                && validLegacyPortableRecord(oldRecord, RAM_MASK);
+            if (valid) {
+                digest = XXH64(&oldRecord, sizeof(oldRecord), digest);
+                record = upgradeLegacyPortableRecord(oldRecord);
+            }
+        } else {
+            valid = fread(&record, sizeof(record), 1, file) == 1
+                && validPortableRecord(record, RAM_MASK);
+            if (valid)
+                digest = XXH64(&record, sizeof(record), digest);
+        }
         if (!valid) break;
-        digest = XXH64(&record, sizeof(record), digest);
+        if (hasPortableSource(record)
+                && (record.sourceBytes > sourceBytes
+                    || record.sourceOffset > sourceBytes - record.sourceBytes)) {
+            valid = false;
+            break;
+        }
         try { records.push_back(record); }
         catch (...) { valid = false; }
+    }
+    if (valid && sourceBytes) {
+        try { sources.resize(sourceBytes); }
+        catch (...) { valid = false; }
+        if (valid) {
+            valid = fread(sources.data(), sourceBytes, 1, file) == 1;
+            if (valid)
+                digest = XXH64(sources.data(), sources.size(), digest);
+        }
     }
     valid = valid && digest == header.payloadHash && fgetc(file) == EOF && !ferror(file);
     fclose(file);
     if (!valid) {
+        records.clear();
+        sources.clear();
+    }
+    return valid;
+}
+static bool readPortableCoverage()
+{
+    const std::string portablePath = get_writable_data_path("mvc2_portable_cache.bin");
+    std::vector<PortableRecord> records;
+    std::vector<u8> sources;
+    if (!readPortableFile(portablePath, records, sources)) {
         WARN_LOG(DYNAREC, "mvc2-portable: coverage rejected; ordinary JIT");
         return false;
     }
     portableRecords.swap(records);
+    portableSources.swap(sources);
     try { portableDone.assign(portableRecords.size(), 0); }
     catch (...) {
         std::vector<PortableRecord>().swap(portableRecords);
+        std::vector<u8>().swap(portableSources);
         WARN_LOG(DYNAREC, "mvc2-portable: state allocation failed; ordinary JIT");
         return false;
     }
-    NOTICE_LOG(DYNAREC, "mvc2-portable: loaded=%u bytes=%u build_independent=1 budget_us=%u initial_budget_us=%u max_renders=%u",
+    NOTICE_LOG(DYNAREC, "mvc2-portable: loaded=%u source_bytes=%u build_independent=1 budget_us=%u initial_budget_us=%u max_renders=%u",
         (u32)portableRecords.size(),
-        (u32)(sizeof(PortableHeader) + portableRecords.size() * sizeof(PortableRecord)),
+        (u32)portableSources.size(),
         portableBudgetUs, portableInitialBudgetUs, portableMaxRenders);
     return !portableRecords.empty();
 }
+static bool savePortableTraining()
+{
+    if (!portableTrainingDirty)
+        return true;
+    PortableHeader header{};
+    memcpy(header.magic, "MVC2SH41", 8);
+    header.version = PortableVersion;
+    header.headerSize = sizeof(header);
+    header.recordSize = sizeof(PortableRecord);
+    header.count = portableTrainingRecords.size();
+    header.gameIdentity = PortableGameIdentity;
+    header.reserved[0] = portableTrainingSources.size();
+    for (const PortableRecord& record : portableTrainingRecords) {
+        if (!validPortableRecord(record, RAM_MASK)
+                || (hasPortableSource(record)
+                    && (record.sourceBytes > portableTrainingSources.size()
+                        || record.sourceOffset
+                            > portableTrainingSources.size() - record.sourceBytes))) {
+            WARN_LOG(DYNAREC, "mvc2-portable-training: invalid in-memory record; checkpoint rejected");
+            return false;
+        }
+        header.payloadHash = XXH64(&record, sizeof(record), header.payloadHash);
+    }
+    if (!portableTrainingSources.empty())
+        header.payloadHash = XXH64(portableTrainingSources.data(),
+            portableTrainingSources.size(), header.payloadHash);
+    header.headerHash = portableHeaderHash(header);
+    const std::string temporary = portableTrainingPath + ".tmp";
+    FILE* file = fopen(temporary.c_str(), "wb");
+    bool valid = file != nullptr;
+    if (file) {
+        setvbuf(file, nullptr, _IOFBF, 65536);
+        valid = fwrite(&header, sizeof(header), 1, file) == 1;
+        if (!portableTrainingRecords.empty())
+            valid = fwrite(portableTrainingRecords.data(), sizeof(PortableRecord),
+                portableTrainingRecords.size(), file) == portableTrainingRecords.size()
+                && valid;
+        if (!portableTrainingSources.empty())
+            valid = fwrite(portableTrainingSources.data(), 1,
+                portableTrainingSources.size(), file) == portableTrainingSources.size()
+                && valid;
+        valid = fclose(file) == 0 && valid;
+    }
+    valid = valid && rename(temporary.c_str(), portableTrainingPath.c_str()) == 0;
+    NOTICE_LOG(DYNAREC, "mvc2-portable-training: saved=%u source_bytes=%u saturated=%u io_error=%u path=%s invalid_skipped=%u",
+        (u32)portableTrainingRecords.size(), (u32)portableTrainingSources.size(),
+        portableTrainingSaturated, !valid, portableTrainingPath.c_str(),
+        portableTrainingInvalidSkipped);
+    if (valid)
+        portableTrainingDirty = false;
+    return valid;
+}
+static bool beginPortableTraining()
+{
+    portableTrainingPath = get_writable_data_path("mvc2_portable_training.bin");
+    FILE* probe = fopen(portableTrainingPath.c_str(), "rb");
+    const bool exists = probe != nullptr;
+    if (probe)
+        fclose(probe);
+    if (exists && !readPortableFile(portableTrainingPath,
+                                    portableTrainingRecords,
+                                    portableTrainingSources)) {
+        WARN_LOG(DYNAREC, "mvc2-portable-training: existing file rejected; collection disabled");
+        return false;
+    }
+    try {
+        portableTrainingRecords.reserve(std::min<size_t>(MaxPortableRecords,
+            portableTrainingRecords.size() + RecordReserveChunk));
+        portableTrainingSources.reserve(std::min<size_t>(MaxPortableSourceBytes,
+            portableTrainingSources.size() + 256 * 1024));
+        portableTrainingIndex.reserve(portableTrainingRecords.size()
+            + RecordReserveChunk);
+        for (size_t index = 0; index < portableTrainingRecords.size(); ++index) {
+            const PortableRecord& record = portableTrainingRecords[index];
+            portableTrainingIndex.emplace(key(record.guestPc, record.fpuMode), index);
+        }
+    } catch (...) {
+        WARN_LOG(DYNAREC, "mvc2-portable-training: initial allocation failed; collection disabled");
+        return false;
+    }
+    NOTICE_LOG(DYNAREC, "mvc2-portable-training: recording base=%u source_bytes=%u",
+        (u32)portableTrainingRecords.size(), (u32)portableTrainingSources.size());
+    return true;
+}
+static void recordPortableSource(RuntimeBlockInfo* block)
+{
+    if (!portableRecording || portablePrewarming || validating
+            || portableTrainingSaturated || block->temp_block
+            || block->blockcheck_failures || excludedPc(block->vaddr))
+        return;
+    PortableRecord record{};
+    record.guestPc = block->vaddr;
+    record.fpuMode = block->fpu_cfg.full;
+    record.guestBytes = block->sh4_code_size;
+    record.flags = block->read_only ? 0u
+        : PortableExactSourceHash | PortableWritableSource;
+    record.pageCount = ((record.guestPc & 4095) + record.guestBytes + 4095) / 4096;
+    record.sourceOffset = block->read_only
+        ? NoPortableSource : portableTrainingSources.size();
+    record.sourceBytes = block->read_only ? 0 : record.guestBytes;
+    const u32 guestOffset = record.guestPc & RAM_MASK;
+    if (portableTrainingRecords.size() >= MaxPortableRecords
+            || portableTrainingSources.size() > MaxPortableSourceBytes
+            || (record.sourceBytes && record.sourceBytes
+                > MaxPortableSourceBytes - portableTrainingSources.size())) {
+        portableTrainingSaturated = 1;
+        WARN_LOG(DYNAREC, "mvc2-portable-training: capacity reached records=%u source_bytes=%u",
+            (u32)portableTrainingRecords.size(), (u32)portableTrainingSources.size());
+        return;
+    }
+    if (!validPortableRecord(record, RAM_MASK)) {
+        ++portableTrainingInvalidSkipped;
+        if (portableTrainingInvalidSkipped == 1)
+            WARN_LOG(DYNAREC, "mvc2-portable-training: skipping invalid block pc=%08x bytes=%u pages=%u",
+                record.guestPc, record.guestBytes, record.pageCount);
+        return;
+    }
+    if (record.flags & PortableExactSourceHash) {
+        record.sourceHash = XXH64(mem_b.data + guestOffset, record.guestBytes, 0);
+    } else {
+        u32 pageOffset = guestOffset & ~4095u;
+        for (u32 page = 0; page < record.pageCount; ++page, pageOffset += 4096)
+            record.pageHash[page] = XXH64(mem_b.data + pageOffset, 4096, 0);
+    }
+    const auto range = portableTrainingIndex.equal_range(
+        key(record.guestPc, record.fpuMode));
+    for (auto it = range.first; it != range.second; ++it) {
+        const PortableRecord& previous = portableTrainingRecords[it->second];
+        if (samePortableSource(previous, record)) {
+            if (!hasPortableSource(record)
+                    || (previous.sourceBytes == record.sourceBytes
+                        && !memcmp(portableTrainingSources.data() + previous.sourceOffset,
+                            mem_b.data + guestOffset, record.sourceBytes)))
+                return;
+        }
+    }
+    const size_t previousRecordCount = portableTrainingRecords.size();
+    const size_t previousSourceBytes = portableTrainingSources.size();
+    try {
+        if (portableTrainingRecords.size() == portableTrainingRecords.capacity())
+            portableTrainingRecords.reserve(std::min<size_t>(MaxPortableRecords,
+                portableTrainingRecords.capacity() + RecordReserveChunk));
+        const size_t neededSourceBytes = portableTrainingSources.size()
+            + record.sourceBytes;
+        if (neededSourceBytes > portableTrainingSources.capacity())
+            portableTrainingSources.reserve(std::min<size_t>(MaxPortableSourceBytes,
+                std::max(neededSourceBytes,
+                    portableTrainingSources.capacity() + 256 * 1024)));
+        if (record.sourceBytes)
+            portableTrainingSources.insert(portableTrainingSources.end(),
+                mem_b.data + guestOffset,
+                mem_b.data + guestOffset + record.sourceBytes);
+        portableTrainingRecords.push_back(record);
+        portableTrainingIndex.emplace(key(record.guestPc, record.fpuMode),
+                                      previousRecordCount);
+        portableTrainingDirty = true;
+    } catch (...) {
+        portableTrainingRecords.resize(previousRecordCount);
+        portableTrainingSources.resize(previousSourceBytes);
+        portableTrainingSaturated = 1;
+        WARN_LOG(DYNAREC, "mvc2-portable-training: allocation failed; collection stopped");
+    }
+}
 struct PortableWarmStats {
-    u32 scanned, unavailable, matched, compiled, existing, rejected, staged;
+    u32 scanned, unavailable, matched, stored, compiled, existing, rejected, staged;
     u64 elapsedUs;
 };
 static PortableWarmStats prewarmPortableCoverageBudget(u32 budgetUs,
-                                                        bool modeIndependent)
+                                                        bool modeIndependent,
+                                                        bool allowStoredSource = false)
 {
     PortableWarmStats stats{};
     if (!portableEnabled || portableRecords.empty() || !budgetUs)
@@ -268,13 +492,30 @@ static PortableWarmStats prewarmPortableCoverageBudget(u32 budgetUs,
             continue;
         const PortableRecord& record = portableRecords[index];
         const bool currentMode = record.fpuMode == fpscr.full;
-        if ((!currentMode && !modeIndependent) || !portableSourceMatches(record)) {
+        const u8* storedSource = nullptr;
+        if (allowStoredSource && hasPortableSource(record)
+                && (record.flags & (PortableExactSourceHash | PortableWritableSource))
+                    == (PortableExactSourceHash | PortableWritableSource)) {
+            const u8* candidate = portableSources.data() + record.sourceOffset;
+            if (XXH64(candidate, record.sourceBytes, 0) == record.sourceHash)
+                storedSource = candidate;
+        }
+        // A stored writable variant must always be staged, even when the same
+        // bytes happen to be resident now. Publishing it directly lets a later
+        // overlay write invalidate it before the variant is actually needed.
+        const bool residentSource = storedSource == nullptr
+            && portableSourceMatches(record)
+            && portableRecordProtectionMatches(record);
+        if ((!currentMode && !modeIndependent)
+                || (!residentSource && storedSource == nullptr)) {
             ++stats.unavailable;
         } else {
             ++stats.matched;
-            const Mvc2PortableWarmResult result =
-                rdv_PrewarmPortableBlock(record,
-                                         modeIndependent && !currentMode);
+            stats.stored += storedSource != nullptr;
+            portablePrewarming = true;
+            const Mvc2PortableWarmResult result = rdv_PrewarmPortableBlock(
+                record, modeIndependent && !currentMode, storedSource);
+            portablePrewarming = false;
             if (result == Mvc2PortableWarmResult::NoSpace) {
                 portableEnabled = false;
                 WARN_LOG(DYNAREC, "mvc2-portable: prewarm stopped; JIT cache has no safe reserve");
@@ -314,17 +555,19 @@ static void prewarmPortableCoverage()
     ++portablePolls;
     if (portableMaxRenders && renderDelta > portableMaxRenders) {
         if (portablePolls % 30 == 0)
-            NOTICE_LOG(DYNAREC, "mvc2-portable: active interval renders=%u; prewarm deferred prepared=%u/%u staged_live=%u staged_hits=%u staged_rejects=%u",
+            NOTICE_LOG(DYNAREC, "mvc2-portable: active interval renders=%u; prewarm deferred prepared=%u/%u staged_live=%u staged_hits=%u staged_skips=%u protection_skips=%u source_skips=%u fpu_skips=%u",
                 renderDelta, portableCompiled + portableExisting + portableStaged,
                 (u32)portableRecords.size(), (u32)stagedPortableBlocks.size(),
-                portableStagedHits, portableStagedRejects);
+                portableStagedHits, portableStagedRejects,
+                portableStagedProtectionRejects, portableStagedSourceRejects,
+                portableStagedFpuRejects);
         return;
     }
     const PortableWarmStats stats = prewarmPortableCoverageBudget(portableBudgetUs, false);
     if (stats.compiled || stats.rejected || portablePolls % 30 == 0) {
-        NOTICE_LOG(DYNAREC, "mvc2-portable: prewarm renders=%u scanned=%u unavailable=%u matched=%u compiled=%u existing=%u staged=%u rejected=%u total=%u/%u elapsed_us=%llu",
+        NOTICE_LOG(DYNAREC, "mvc2-portable: prewarm renders=%u scanned=%u unavailable=%u matched=%u stored=%u compiled=%u existing=%u staged=%u rejected=%u total=%u/%u elapsed_us=%llu",
             renderDelta, stats.scanned, stats.unavailable, stats.matched,
-            stats.compiled, stats.existing, stats.staged, stats.rejected,
+            stats.stored, stats.compiled, stats.existing, stats.staged, stats.rejected,
             portableCompiled + portableExisting + portableStaged,
             (u32)portableRecords.size(),
             (unsigned long long)stats.elapsedUs);
@@ -518,12 +761,17 @@ void mvc2NativeCacheReset()
     }
     stagedPortableBlocks.clear();
     initialized = enabled = recording = merging = validating = reported = false;
+    portableRecording = portableTrainingDirty = portablePrewarming = false;
+    portableTrainingSaturated = 0;
+    portableTrainingInvalidSkipped = 0;
     portableEnabled = false;
     portableCursor = 0;
     portableBudgetUs = portableInitialBudgetUs = portableMaxRenders = portablePolls = 0;
     portableCompiled = portableExisting = portableLastRenderCount = 0;
     portableRenderBaseline = portableInitialWarmDone = false;
     portableRejected = portableStaged = portableStagedHits = portableStagedRejects = portableEpoch = 0;
+    portableStagedProtectionRejects = portableStagedSourceRejects = 0;
+    portableStagedFpuRejects = 0;
     memset(protectedPageVerified, 0, sizeof(protectedPageVerified));
     memset(portablePageEpoch, 0, sizeof(portablePageEpoch));
     std::vector<Record>().swap(loaded);
@@ -534,8 +782,12 @@ void mvc2NativeCacheReset()
     std::vector<u8>().swap(consumed);
     std::vector<u8>().swap(learnedCode);
     std::vector<PortableRecord>().swap(portableRecords);
+    std::vector<u8>().swap(portableSources);
     std::vector<u8>().swap(portableDone);
+    std::vector<PortableRecord>().swap(portableTrainingRecords);
+    std::vector<u8>().swap(portableTrainingSources);
     blockIndex.clear();
+    portableTrainingIndex.clear();
 }
 void mvc2NativeCacheInvalidatePage(u32 guestAddress)
 {
@@ -564,6 +816,7 @@ void mvc2NativeCacheBegin()
         return;
     const bool aotPack = cfgLoadBool("perf", "Mvc2AotPack", false);
     const bool portableLoad = cfgLoadBool("perf", "Mvc2PortableCache", false);
+    portableRecording = cfgLoadBool("perf", "Mvc2PortableCacheRecord", false);
     recording = cfgLoadBool("perf", "Mvc2NativeCacheRecord", false);
     const bool nativeLoad = cfgLoadBool("perf", "Mvc2NativeCache", false);
     bool load = aotPack || nativeLoad;
@@ -572,11 +825,13 @@ void mvc2NativeCacheBegin()
         recording = false;
     }
     merging = recording && load && cfgLoadBool("perf", "Mvc2NativeCacheMerge", false);
-    if (!recording && !load && !portableLoad) return;
-    if (memcmp(mvc2_native_build_id, "\x04\0\0\0\x14\0\0\0\x03\0\0\0GNU\0", 16)) {
+    if (!recording && !load && !portableLoad && !portableRecording) return;
+    if ((recording || load)
+            && memcmp(mvc2_native_build_id,
+                "\x04\0\0\0\x14\0\0\0\x03\0\0\0GNU\0", 16)) {
         WARN_LOG(DYNAREC, "mvc2-native: missing linked build identity");
         recording = false;
-        return;
+        load = false;
     }
     identity = Header{};
     memcpy(identity.magic, "MVC2ARM1", 8);
@@ -630,6 +885,8 @@ void mvc2NativeCacheBegin()
     }
     if (portableLoad)
         portableEnabled = readPortableCoverage();
+    if (portableRecording)
+        portableRecording = beginPortableTraining();
 }
 void mvc2NativeCachePrewarmInitial()
 {
@@ -641,7 +898,7 @@ void mvc2NativeCachePrewarmInitial()
         return;
     const u64 initialStart = sceKernelGetProcessTimeWide();
     const PortableWarmStats current =
-        prewarmPortableCoverageBudget(portableInitialBudgetUs, false);
+        prewarmPortableCoverageBudget(portableInitialBudgetUs, false, true);
     const u64 currentElapsed = sceKernelGetProcessTimeWide() - initialStart;
     const u32 remainingUs = currentElapsed < portableInitialBudgetUs
         ? portableInitialBudgetUs - (u32)currentElapsed : 0;
@@ -649,12 +906,12 @@ void mvc2NativeCachePrewarmInitial()
     // can be emitted from coverage recorded in another mode without changing
     // the single-entry-per-PC block manager contract.
     const PortableWarmStats independent =
-        prewarmPortableCoverageBudget(remainingUs, true);
+        prewarmPortableCoverageBudget(remainingUs, true, true);
     portableLastRenderCount = ta_getGuestRenderCount();
     portableRenderBaseline = true;
-    NOTICE_LOG(DYNAREC, "mvc2-portable: initial-prewarm fpu=%08X current_scanned=%u current_matched=%u current_compiled=%u independent_scanned=%u independent_matched=%u independent_compiled=%u staged=%u rejected=%u total=%u/%u elapsed_us=%llu",
-        fpscr.full, current.scanned, current.matched, current.compiled,
-        independent.scanned, independent.matched, independent.compiled,
+    NOTICE_LOG(DYNAREC, "mvc2-portable: initial-prewarm fpu=%08X current_scanned=%u current_matched=%u current_stored=%u current_compiled=%u independent_scanned=%u independent_matched=%u independent_stored=%u independent_compiled=%u staged=%u rejected=%u total=%u/%u elapsed_us=%llu",
+        fpscr.full, current.scanned, current.matched, current.stored, current.compiled,
+        independent.scanned, independent.matched, independent.stored, independent.compiled,
         independent.staged, current.rejected + independent.rejected,
         portableCompiled + portableExisting + portableStaged,
         (u32)portableRecords.size(),
@@ -669,6 +926,7 @@ void mvc2NativeCacheRecord(RuntimeBlockInfo* block, int tRegister, int flagsCond
         validationFlagsCondition = flagsCondition;
         return;
     }
+    recordPortableSource(block);
     if (!recording || saturated || block->temp_block
             || block->blockcheck_failures || excludedPc(block->vaddr))
         return;
@@ -769,12 +1027,16 @@ RuntimeBlockInfo* mvc2NativeCacheLookup(u32 guestPc, u32 fpuMode)
     for (auto it = stagedRange.first; it != stagedRange.second; ) {
         auto candidate = it++;
         RuntimeBlockInfo* block = candidate->second.block;
-        if (!portableProtectionMatches(block)
-                || !portableSourceMatchesNow(candidate->second.source)
-                || (block->has_fpu_op && (sr.status & (1 << 15)))) {
-            block->Discard();
-            delete block;
-            stagedPortableBlocks.erase(candidate);
+        const bool protectionMatches = portableProtectionMatches(block);
+        const bool sourceMatches = portableSourceMatchesNow(candidate->second.source);
+        const bool fpuRejected = block->has_fpu_op && (sr.status & (1 << 15));
+        if (!protectionMatches || !sourceMatches || fpuRejected) {
+            portableStagedProtectionRejects += !protectionMatches;
+            portableStagedSourceRejects += !sourceMatches;
+            portableStagedFpuRejects += fpuRejected;
+            // Code overlays and their page-protection class are transient.
+            // Keep nonmatching variants for a later exact-source lookup rather
+            // than destroying them on the first state observed at this PC.
             ++portableStagedRejects;
             continue;
         }
@@ -871,23 +1133,35 @@ void mvc2NativeCachePoll()
     if (!initialized)
         return;
     prewarmPortableCoverage();
-    if ((reported && !recording) || (!enabled && !recording && !validationFailures)
+    if ((reported && !recording && !portableRecording)
+            || (!enabled && !recording && !portableRecording && !validationFailures)
             || sceKernelGetProcessTimeWide() < deadline)
         return;
-    NOTICE_LOG(DYNAREC, "mvc2-native: report hits=%u misses=%u source_reject=%u used_reject=%u duplicate_skip=%u saturated=%u validated=%u failures=%u page_checks=%u",
-        hits, misses, sourceRejects, usedRejects, duplicateSkips,
-        saturated, validated, validationFailures, pageChecks);
+    if (enabled || recording || validationFailures)
+        NOTICE_LOG(DYNAREC, "mvc2-native: report hits=%u misses=%u source_reject=%u used_reject=%u duplicate_skip=%u saturated=%u validated=%u failures=%u page_checks=%u",
+            hits, misses, sourceRejects, usedRejects, duplicateSkips,
+            saturated, validated, validationFailures, pageChecks);
+    bool continueCheckpointing = false;
     if (recording) {
         const bool identityValid = _vmem_native_mapping_generation() == mapGeneration
             && configHash() == identity.configHash;
         const bool saved = identityValid && saveCache(merging);
-        if (merging && saved && !saturated) {
-            // Periodic atomic checkpoints bound data loss for long tester
-            // sessions without publishing appended entries in this process.
-            deadline = sceKernelGetProcessTimeWide() + checkpointSeconds * 1000000ULL;
-            return;
-        }
-        recording = false;
+        continueCheckpointing = merging && saved && !saturated;
+        if (!continueCheckpointing)
+            recording = false;
+    }
+    if (portableRecording) {
+        const bool saved = savePortableTraining();
+        if (saved && !portableTrainingSaturated)
+            continueCheckpointing = true;
+        else
+            portableRecording = false;
+    }
+    if (continueCheckpointing) {
+        // Periodic atomic checkpoints bound data loss for long tester
+        // sessions without publishing appended entries in this process.
+        deadline = sceKernelGetProcessTimeWide() + checkpointSeconds * 1000000ULL;
+        return;
     }
     reported = true;
 }

@@ -30,6 +30,11 @@ struct Cache {
     std::vector<Candidate> blocks;
 };
 
+struct PortableCandidate {
+    PortableRecord record{};
+    std::vector<uint8_t> source;
+};
+
 uint64_t hashHeader(Header header) {
     header.headerHash = 0;
     return XXH64(&header, sizeof(header), 0);
@@ -130,6 +135,89 @@ Cache readCache(const std::string& path) {
     return cache;
 }
 
+std::vector<PortableCandidate> readPortableFile(const std::string& path) {
+    std::ifstream input(path.c_str(), std::ios::binary);
+    if (!input)
+        throw std::runtime_error("cannot open input: " + path);
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(input)), {});
+    const uint64_t maxFileBytes = sizeof(PortableHeader)
+        + uint64_t(MaxPortableRecords) * sizeof(PortableRecord)
+        + MaxPortableSourceBytes;
+    if (data.size() < sizeof(PortableHeader) || data.size() > maxFileBytes)
+        throw std::runtime_error("invalid portable file size: " + path);
+    size_t offset = 0;
+    const PortableHeader header = readObject<PortableHeader>(data, offset,
+                                                              "portable header");
+    const bool legacy = header.version == LegacyPortableVersion;
+    const uint32_t sourceBytes = legacy ? 0 : header.reserved[0];
+    if (memcmp(header.magic, "MVC2SH41", 8)
+            || (!legacy && header.version != PortableVersion)
+            || header.headerSize != sizeof(header)
+            || header.recordSize != (legacy ? sizeof(LegacyPortableRecord)
+                                            : sizeof(PortableRecord))
+            || header.count > MaxPortableRecords
+            || sourceBytes > MaxPortableSourceBytes
+            || header.gameIdentity != PortableGameIdentity
+            || (legacy && header.reserved[0])
+            || header.reserved[1] || header.reserved[2] || header.reserved[3]
+            || header.headerHash != hashPortableHeader(header))
+        throw std::runtime_error("invalid portable header: " + path);
+    std::vector<PortableRecord> records;
+    records.reserve(header.count);
+    uint64_t digest = 0;
+    for (uint32_t index = 0; index < header.count; ++index) {
+        PortableRecord record{};
+        if (legacy) {
+            const LegacyPortableRecord oldRecord =
+                readObject<LegacyPortableRecord>(data, offset, "portable v1 record");
+            if (!validLegacyPortableRecord(oldRecord, 0xffffff))
+                throw std::runtime_error("invalid portable v1 record: " + path);
+            digest = XXH64(&oldRecord, sizeof(oldRecord), digest);
+            record = upgradeLegacyPortableRecord(oldRecord);
+        } else {
+            record = readObject<PortableRecord>(data, offset, "portable v2 record");
+            if (!validPortableRecord(record, 0xffffff))
+                throw std::runtime_error("invalid portable v2 record: " + path);
+            digest = XXH64(&record, sizeof(record), digest);
+        }
+        if (hasPortableSource(record)
+                && (record.sourceBytes > sourceBytes
+                    || record.sourceOffset > sourceBytes - record.sourceBytes))
+            throw std::runtime_error("portable source range outside payload: " + path);
+        records.push_back(record);
+    }
+    if (sourceBytes > data.size() - offset || offset + sourceBytes != data.size())
+        throw std::runtime_error("portable source payload size mismatch: " + path);
+    if (sourceBytes)
+        digest = XXH64(data.data() + offset, sourceBytes, digest);
+    if (digest != header.payloadHash)
+        throw std::runtime_error("portable payload checksum mismatch: " + path);
+    std::vector<PortableCandidate> candidates;
+    candidates.reserve(records.size());
+    for (const PortableRecord& record : records) {
+        PortableCandidate candidate;
+        candidate.record = record;
+        // Stored bytes are useful only for exact writable overlays. Page-hash
+        // records are prewarmed from resident RAM and must not consume the
+        // bounded source payload merely because an older collector included
+        // redundant bytes.
+        if (hasPortableSource(record)
+                && (record.flags & (PortableExactSourceHash | PortableWritableSource))
+                    == (PortableExactSourceHash | PortableWritableSource))
+            candidate.source.assign(data.begin() + offset + record.sourceOffset,
+                data.begin() + offset + record.sourceOffset + record.sourceBytes);
+        candidates.push_back(std::move(candidate));
+    }
+    return candidates;
+}
+
+bool isPortableFile(const std::string& path) {
+    std::ifstream input(path.c_str(), std::ios::binary);
+    char magic[8] = {};
+    return input.read(magic, sizeof(magic))
+        && !memcmp(magic, "MVC2SH41", sizeof(magic));
+}
+
 bool sameIdentity(const Header& left, const Header& right) {
     return left.codeBase == right.codeBase && left.contextBase == right.contextBase
         && left.prefixSize == right.prefixSize && left.prefixHash == right.prefixHash
@@ -156,6 +244,7 @@ bool sourceLess(const Candidate& left, const Candidate& right) {
 
 PortableRecord makePortableRecord(const Record& source) {
     PortableRecord output{};
+    output.sourceOffset = NoPortableSource;
     output.guestPc = source.guestPc;
     output.fpuMode = source.fpuMode;
     output.guestBytes = source.guestBytes;
@@ -171,7 +260,9 @@ PortableRecord makePortableRecord(const Record& source) {
     return output;
 }
 
-bool portableLess(const PortableRecord& a, const PortableRecord& b) {
+bool portableLess(const PortableCandidate& left, const PortableCandidate& right) {
+    const PortableRecord& a = left.record;
+    const PortableRecord& b = right.record;
 #define CMP_PORTABLE(field) do { if (a.field != b.field) return a.field < b.field; } while (0)
     CMP_PORTABLE(guestPc);
     CMP_PORTABLE(fpuMode);
@@ -179,19 +270,36 @@ bool portableLess(const PortableRecord& a, const PortableRecord& b) {
     CMP_PORTABLE(flags);
     CMP_PORTABLE(pageCount);
     CMP_PORTABLE(sourceHash);
-    for (uint32_t page = 0; page < MaxPages; ++page)
-        CMP_PORTABLE(pageHash[page]);
+    if (!(a.flags & PortableExactSourceHash))
+        for (uint32_t page = 0; page < MaxPages; ++page)
+            CMP_PORTABLE(pageHash[page]);
 #undef CMP_PORTABLE
     return false;
 }
 
-std::vector<PortableRecord> deduplicatePortable(std::vector<PortableRecord> records,
-                                                 uint64_t& duplicates) {
+std::vector<PortableCandidate> deduplicatePortable(
+        std::vector<PortableCandidate> records, uint64_t& duplicates) {
     std::sort(records.begin(), records.end(), portableLess);
-    const auto uniqueEnd = std::unique(records.begin(), records.end(), samePortableSource);
-    duplicates = static_cast<uint64_t>(records.end() - uniqueEnd);
-    records.erase(uniqueEnd, records.end());
-    return records;
+    std::vector<PortableCandidate> unique;
+    unique.reserve(records.size());
+    for (size_t begin = 0; begin < records.size();) {
+        size_t end = begin + 1;
+        while (end < records.size()
+                && samePortableSource(records[begin].record, records[end].record))
+            ++end;
+        size_t selected = begin;
+        for (size_t index = begin + 1; index < end; ++index) {
+            if (!records[selected].source.empty() && !records[index].source.empty()
+                    && records[selected].source != records[index].source)
+                throw std::runtime_error("same portable source identity has different SH4 bytes");
+            if (records[selected].source.empty() && !records[index].source.empty())
+                selected = index;
+        }
+        unique.push_back(std::move(records[selected]));
+        duplicates += end - begin - 1;
+        begin = end;
+    }
+    return unique;
 }
 
 bool candidateLess(const Candidate& left, const Candidate& right) {
@@ -388,7 +496,7 @@ void writePack(const std::string& outputPath, Header header,
 }
 
 void writeCoverage(const std::string& outputPath,
-                   const std::vector<PortableRecord>& records) {
+                   std::vector<PortableCandidate> records) {
     if (records.size() > MaxPortableRecords)
         throw std::runtime_error("portable coverage exceeds the record limit");
     PortableHeader header{};
@@ -398,11 +506,28 @@ void writeCoverage(const std::string& outputPath,
     header.recordSize = sizeof(PortableRecord);
     header.count = static_cast<uint32_t>(records.size());
     header.gameIdentity = PortableGameIdentity;
-    for (const PortableRecord& record : records) {
+    std::vector<uint8_t> sources;
+    for (PortableCandidate& candidate : records) {
+        PortableRecord& record = candidate.record;
+        if (candidate.source.empty()) {
+            record.sourceOffset = NoPortableSource;
+            record.sourceBytes = 0;
+        } else {
+            if (candidate.source.size() != record.guestBytes
+                    || candidate.source.size()
+                        > MaxPortableSourceBytes - sources.size())
+                throw std::runtime_error("portable SH4 source exceeds bounds");
+            record.sourceOffset = sources.size();
+            record.sourceBytes = candidate.source.size();
+            sources.insert(sources.end(), candidate.source.begin(), candidate.source.end());
+        }
         if (!validPortableRecord(record, 0xffffff))
             throw std::runtime_error("invalid portable output record");
         header.payloadHash = XXH64(&record, sizeof(record), header.payloadHash);
     }
+    if (!sources.empty())
+        header.payloadHash = XXH64(sources.data(), sources.size(), header.payloadHash);
+    header.reserved[0] = sources.size();
     header.headerHash = hashPortableHeader(header);
 
     std::ifstream existing(outputPath.c_str(), std::ios::binary);
@@ -413,9 +538,11 @@ void writeCoverage(const std::string& outputPath,
     if (!output)
         throw std::runtime_error("cannot create temporary output: " + temporary);
     output.write(reinterpret_cast<const char*>(&header), sizeof(header));
-    if (!records.empty())
-        output.write(reinterpret_cast<const char*>(records.data()),
-                     records.size() * sizeof(PortableRecord));
+    for (const PortableCandidate& candidate : records)
+        output.write(reinterpret_cast<const char*>(&candidate.record),
+                     sizeof(candidate.record));
+    if (!sources.empty())
+        output.write(reinterpret_cast<const char*>(sources.data()), sources.size());
     output.close();
     if (!output)
         throw std::runtime_error("failed writing portable coverage");
@@ -423,7 +550,8 @@ void writeCoverage(const std::string& outputPath,
         throw std::runtime_error("cannot publish portable coverage");
     printf("portable_coverage=%s records=%u bytes=%llu game_identity=%016llx\n",
         outputPath.c_str(), header.count,
-        (unsigned long long)(sizeof(header) + records.size() * sizeof(PortableRecord)),
+        (unsigned long long)(sizeof(header) + records.size() * sizeof(PortableRecord)
+            + sources.size()),
         (unsigned long long)header.gameIdentity);
 }
 
@@ -495,17 +623,25 @@ int main(int argc, char** argv) {
         if (argc < 4 || (!nativeOutput && !portableOutput)) {
             fprintf(stderr, "usage: %s --output <mvc2_aot_pack.bin> <cache.bin> [cache2.bin ...]\n",
                     argv[0]);
-            fprintf(stderr, "       %s --coverage-output <mvc2_portable_cache.bin> <cache.bin> [cache2.bin ...]\n",
+            fprintf(stderr, "       %s --coverage-output <mvc2_portable_cache.bin> <native-or-portable.bin> [...]\n",
                     argv[0]);
             fprintf(stderr, "       %s --self-test\n", argv[0]);
             return 2;
         }
         const std::string output = argv[2];
         std::vector<Candidate> candidates;
-        std::vector<PortableRecord> portable;
+        std::vector<PortableCandidate> portable;
         Header identity{};
         uint64_t inputRecords = 0;
         for (int argument = 3; argument < argc; ++argument) {
+            if (portableOutput && isPortableFile(argv[argument])) {
+                std::vector<PortableCandidate> input = readPortableFile(argv[argument]);
+                inputRecords += input.size();
+                portable.insert(portable.end(),
+                    std::make_move_iterator(input.begin()),
+                    std::make_move_iterator(input.end()));
+                continue;
+            }
             Cache cache = readCache(argv[argument]);
             inputRecords += cache.blocks.size();
             if (nativeOutput) {
@@ -518,8 +654,11 @@ int main(int argc, char** argv) {
                     std::make_move_iterator(cache.blocks.end()));
             } else {
                 portable.reserve(portable.size() + cache.blocks.size());
-                for (const Candidate& candidate : cache.blocks)
-                    portable.push_back(makePortableRecord(candidate.record));
+                for (const Candidate& candidate : cache.blocks) {
+                    PortableCandidate converted;
+                    converted.record = makePortableRecord(candidate.record);
+                    portable.push_back(std::move(converted));
+                }
             }
         }
         uint64_t duplicates = 0;
