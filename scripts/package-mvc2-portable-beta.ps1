@@ -3,7 +3,7 @@ param(
     [string]$BuildDir = 'build-vita-cache-normal',
     [Parameter(Mandatory)] [string]$PortableCache,
     [string]$Config = 'scripts/mvc2-pal-beta-collector.cfg',
-    [string]$Version = 'beta4-portable2',
+    [string]$Version = 'beta5-portable2-spritefix-safeexit',
     [string]$Output = ''
 )
 
@@ -26,6 +26,52 @@ function Resolve-RepoFile([string]$Path) {
     return $candidate
 }
 
+function Get-SfoInt32Value([string]$Path, [string]$Key) {
+    [byte[]]$bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 20 -or $bytes[0] -ne 0x00 -or
+            $bytes[1] -ne 0x50 -or $bytes[2] -ne 0x53 -or
+            $bytes[3] -ne 0x46) {
+        throw "Invalid PARAM.SFO header: $Path"
+    }
+    $keyTableOffset = [BitConverter]::ToUInt32($bytes, 8)
+    $dataTableOffset = [BitConverter]::ToUInt32($bytes, 12)
+    $entryCount = [BitConverter]::ToUInt32($bytes, 16)
+    for ($index = 0; $index -lt $entryCount; ++$index) {
+        $entryOffset = 20 + 16 * $index
+        if ($entryOffset + 16 -gt $bytes.Length) {
+            throw "Truncated PARAM.SFO index table: $Path"
+        }
+        $keyOffset = [BitConverter]::ToUInt16($bytes, $entryOffset)
+        $dataFormat = [BitConverter]::ToUInt16($bytes, $entryOffset + 2)
+        $dataLength = [BitConverter]::ToUInt32($bytes, $entryOffset + 4)
+        $dataOffset = [BitConverter]::ToUInt32($bytes, $entryOffset + 12)
+        $keyStart = [int64]$keyTableOffset + $keyOffset
+        if ($keyStart -ge $bytes.Length) {
+            throw "Invalid PARAM.SFO key offset: $Path"
+        }
+        $keyEnd = $keyStart
+        while ($keyEnd -lt $bytes.Length -and $bytes[$keyEnd] -ne 0) {
+            ++$keyEnd
+        }
+        if ($keyEnd -ge $bytes.Length) {
+            throw "Unterminated PARAM.SFO key: $Path"
+        }
+        $entryKey = [Text.Encoding]::UTF8.GetString(
+            $bytes, [int]$keyStart, [int]($keyEnd - $keyStart))
+        if ($entryKey -eq $Key) {
+            if ($dataFormat -ne 0x0404 -or $dataLength -lt 4) {
+                throw "PARAM.SFO key '$Key' is not a 32-bit integer: $Path"
+            }
+            $valueOffset = [int64]$dataTableOffset + $dataOffset
+            if ($valueOffset + 4 -gt $bytes.Length) {
+                throw "Invalid PARAM.SFO data offset for '$Key': $Path"
+            }
+            return [BitConverter]::ToInt32($bytes, [int]$valueOffset)
+        }
+    }
+    throw "PARAM.SFO is missing required key '$Key': $Path"
+}
+
 $build = if ([IO.Path]::IsPathRooted($BuildDir)) {
     [IO.Path]::GetFullPath($BuildDir)
 } else {
@@ -44,6 +90,9 @@ $elf = Resolve-RepoFile (Join-Path $build 'flycast')
 $vpk = Resolve-RepoFile (Join-Path $build 'Flycast.vpk')
 $sfo = Resolve-RepoFile (Join-Path $build 'sce_sys/param.sfo')
 $inspector = Resolve-RepoFile 'build-vita-tools/test-mvc2-native-cache.exe'
+if ((Get-SfoInt32Value -Path $sfo -Key 'ATTRIBUTE2') -ne 12) {
+    throw "Collector PARAM.SFO must contain ATTRIBUTE2=12: $sfo"
+}
 
 if ($Version -notmatch '^[A-Za-z0-9._-]+$') {
     throw 'Version must contain only letters, digits, dot, underscore or dash'
@@ -77,6 +126,9 @@ $requiredConfig = @(
     '(?m)^Mvc2NativeCacheRecord\s*=\s*no\s*$',
     '(?m)^Mvc2NativeCacheMerge\s*=\s*no\s*$',
     '(?m)^Mvc2PortableCacheRecord\s*=\s*yes\s*$',
+    '(?m)^Mvc2PortableTrainingSourceLimitBytes\s*=\s*10485760\s*$',
+    '(?m)^Mvc2PortableExitOnSaturation\s*=\s*yes\s*$',
+    '(?m)^Mvc2PunchThroughMultiDraw\s*=\s*yes\s*$',
     '(?m)^rend\.WideScreen\s*=\s*no\s*$',
     '(?m)^rend\.WidescreenGameHacks\s*=\s*no\s*$',
     '(?m)^rend\.ScreenStretching\s*=\s*100\s*$'
@@ -158,9 +210,14 @@ Test procedure
   slightly exceed the soft time budget during an eligible transition.
 - The MVC2 build forces the original 4:3 presentation and disables the
   widescreen game-memory cheat, including when an older config enabled it.
-- The portable v2 shard is checkpointed atomically every 120 seconds and its
-  stored SH4 source payload is capped at 10 MiB.
-- After the last scene, leave the game running for at least 140 seconds.
+- The portable v2 shard is checkpointed atomically every 120 seconds and on a
+  clean stop/reset. Existing on-disk data must match the loaded checkpoint and
+  a save that would shrink it is refused.
+- Collection stops at 100,000 records or 10 MiB of stored SH4 source. At
+  either limit Flycast performs an immediate final checkpoint and closes only
+  after that save succeeds. Copy the shard before starting the collector again.
+- If the app has not closed by itself, after the last scene either exit Flycast
+  normally or leave it running for at least 140 seconds.
 
 Return these files
   ux0:data/flycast/data/mvc2_portable_training.bin

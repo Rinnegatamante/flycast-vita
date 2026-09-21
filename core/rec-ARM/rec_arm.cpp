@@ -19,6 +19,7 @@
 
 #if FEAT_SHREC == DYNAREC_JIT && HOST_CPU == CPU_ARM
 #include <unistd.h>
+#include <atomic>
 #include <array>
 #include <map>
 #include <unordered_map>

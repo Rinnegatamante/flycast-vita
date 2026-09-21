@@ -1882,9 +1882,75 @@ Testers return
 `mvc2_portable_training.bin` and `flycast.log`; changing Flycast does not
 invalidate or require re-dumping the portable training file.
 
+### Punch-through sprite fix and saturation-safe beta 5, 2026-09-17
+
+Savestate slot 5 exposed long one-pixel colour slivers extending from the
+left-side character sprite. Forcing nearest filtering, disabling the upscale
+bleeding fix, rendering at 480p and using the full shader path did not remove
+them. Converting every strip to independent triangles removed the slivers but
+also dropped HUD geometry, so that experiment was rejected. The retained cause
+is narrower: Vita's merged punch-through index stream joined independent MVC2
+sprite strips with degenerate connector triangles. On this renderer those
+connectors were not reliably rasterisation-free.
+
+For MVC2 only, punch-through geometry now keeps the original array-strip
+ranges and VitaGL submits equivalent consecutive states with
+`glMultiDrawArrays(GL_TRIANGLE_STRIP, ...)`. This avoids connector geometry
+without adding one full state setup per strip. It is not a general removal of
+`make_index` validation: every raw punch-through vertex is checked first, and
+any invalid vertex switches the entire context back to the established indexed
+path, rebuilt per render pass. Other lists, games and platforms retain their
+old path.
+
+The deterministic before/after captures are under
+`build-vita-cache-normal/devkit-logs/mvc2-slot5-deterministic-merged-final/20260916-182348/`
+and
+`build-vita-cache-normal/devkit-logs/mvc2-slot5-noskip-multidraw/20260916-184030/`.
+The latter retains the complete HUD and removes the sprite slivers. Two paired
+10-second runs of the same final binary are recorded in
+`build-vita-cache-normal/devkit-logs/mvc2-slot5-multidraw-ab/20260916-184222/results.csv`.
+The merged path measured 1.000000x and 1.000200x; multidraw measured 1.000200x
+and 1.001502x, so no performance regression was measurable. The final combined
+binary completed the slot-5 interval at 500 renders in 9.979 wall seconds
+(1.002104x). Its screenshot is
+`build-vita-cache-normal/devkit-logs/mvc2-final-slot5-sprite-cache-exit-1-final/20260917-002926/run-001/final.bmp`.
+This is visual and speed evidence for that captured scene, not every MVC2
+effect or stage.
+
+The beta collector now treats either 100,000 records or 10 MiB of stored SH4
+source as final capacity. Saturation bypasses the periodic deadline, writes an
+immediate atomic checkpoint, and requests application exit only after the
+write succeeds. Normal cache reset/stop also checkpoints dirty training data.
+Before replacing the shard, the writer verifies that the on-disk header still
+matches the file loaded by this process and refuses a checkpoint that would
+reduce the existing record or source counts. This prevents a stale or smaller
+in-memory collector from replacing a newer shard.
+
+A low-limit target test first found that returning through the normal Vita C
+runtime hit `SCE_KERNEL_ERROR_BLOCK_IN_USE` (`0x80024703`) in
+`_free_vita_heap`. The final path therefore exits through
+`sceKernelExitProcess` after the cache file is closed and logs are flushed,
+matching the port's existing standalone Exit action. The corrected target run
+is under
+`build-vita-cache-normal/devkit-logs/mvc2-collector-autoexit-fixed/20260917-002845/`.
+It ended with `ProcessExit`, contained no kernel exception, and preserved the
+134,540-byte shard byte-for-byte: SHA256 before and after was
+`08CD1C9C3F7BC5E3F51E1FBA1ACA89DEAA848D22E9139C8F9C0FD369DE24048A`.
+
+The beta-5 archive is
+`build-vita-cache-normal/mvc2-beta-collector-beta5-portable2-spritefix-safeexit-r1.zip`,
+SHA256
+`2E6C2AE6A62E73880F0322C0755DBFD1465CDC0E840F5AAD0838DB2759EB30EE`.
+Its ELF GNU build ID is `a8d195e65307b209ca379d31fe7db67fcbbe79da`.
+Packaging validates `ATTRIBUTE2=12`, the exact 10 MiB collector limit, automatic
+capacity exit, Reduced SMC, forced 4:3 and the punch-through multidraw option.
+The included v2 coverage has 16,304 records, 177 stored writable variants,
+2,558 source bytes, zero duplicate variants and SHA256
+`A0440CBB83786953C924ABBA67B42CAEA5E89616201AA760B2D97CDA1E484801`.
+
 ## Next evidence gate
 
-1. Distribute only beta 4 `collectorfix` across played matches, stages,
+1. Distribute only beta 5 `spritefix-safeexit-r1` across played matches, stages,
    character teams and between-fight transitions. Keep each portable training
    file, log and useful savestate as a separate artifact rather than
    overwriting the evidence.

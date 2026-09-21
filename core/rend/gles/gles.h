@@ -115,6 +115,8 @@ struct PipelineShader
 
 #ifdef __vita__
 extern "C" void vglBufferData(GLenum target, const GLvoid *data);
+extern "C" void glMultiDrawArrays(GLenum mode, const GLint *first,
+		const GLsizei *count, GLsizei drawcount);
 #endif
 
 class GlBuffer

@@ -26,7 +26,11 @@
 #include "wsi/context.h"
 #include "cfg/option.h"
 #include "emulator.h"
+#include "hw/sh4/dyna/mvc2_native_cache.h"
 #include "imgui_driver.h"
+#ifdef __vita__
+#include <psp2/kernel/processmgr.h>
+#endif
 
 static bool mainui_enabled;
 u32 MainFrameCount;
@@ -52,7 +56,22 @@ bool mainui_rend_frame()
 	else
 	{
 		try {
-			if (!emu.render())
+			const bool rendered = emu.render();
+			if (mvc2NativeCacheTakeExitRequest())
+			{
+#ifdef __vita__
+				// The Vita port wraps malloc with vitaGL while newlib still owns
+				// its process heap. Returning through the C runtime attempts to
+				// free that heap while it is in use. The standalone Exit button
+				// already uses the kernel process-exit path for the same reason.
+				fflush(nullptr);
+				sceKernelExitProcess(0);
+#else
+				dc_exit();
+#endif
+				return false;
+			}
+			if (!rendered)
 				return false;
 		} catch (const FlycastException& e) {
 			emu.unloadGame();

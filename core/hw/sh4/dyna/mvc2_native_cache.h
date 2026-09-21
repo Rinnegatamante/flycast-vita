@@ -13,6 +13,7 @@ enum class Mvc2PortableWarmResult : u32 {
 void mvc2NativeCacheBegin();
 void mvc2NativeCacheReset();
 void mvc2NativeCachePoll();
+bool mvc2NativeCacheTakeExitRequest();
 void mvc2NativeCachePrewarmInitial();
 void mvc2NativeCacheInvalidatePage(u32 guestAddress);
 bool mvc2NativeCacheWantsRelocations();
@@ -29,6 +30,7 @@ Mvc2PortableWarmResult rdv_PrewarmPortableBlock(
 inline void mvc2NativeCacheBegin() {}
 inline void mvc2NativeCacheReset() {}
 inline void mvc2NativeCachePoll() {}
+inline bool mvc2NativeCacheTakeExitRequest() { return false; }
 inline void mvc2NativeCachePrewarmInitial() {}
 inline void mvc2NativeCacheInvalidatePage(u32) {}
 inline bool mvc2NativeCacheWantsRelocations() { return false; }

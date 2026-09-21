@@ -270,6 +270,33 @@ void DrawList(const List<PolyParam>& gply, int first, int count)
 	glcache.StencilFunc(GL_ALWAYS,0,0);
 	glcache.StencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);
 
+#ifdef __vita__
+	if (Type == ListType_Punch_Through && pvrrc.punchThroughUsesArrays)
+	{
+		PolyParam *const end = params + count;
+		while (params != end)
+		{
+			SetGPState<Type,SortingEnabled>(params);
+			GLint firsts[64];
+			GLsizei counts[64];
+			int drawCount = 0;
+			const PolyParam *state = params;
+			do
+			{
+				firsts[drawCount] = params->first;
+				counts[drawCount] = params->count;
+				drawCount++;
+				params++;
+			}
+			while (params != end && drawCount < 64
+					&& params->isp.CullMode == state->isp.CullMode
+					&& params->equivalentIgnoreCullingDirection(*state));
+			glMultiDrawArrays(GL_TRIANGLE_STRIP, firsts, counts, drawCount); glCheck();
+		}
+		return;
+	}
+#endif
+
 	for (; count > 0; count--, params++)
 	{
 		if (params->count < 3)

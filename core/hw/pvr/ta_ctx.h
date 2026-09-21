@@ -236,6 +236,9 @@ struct rend_context
 	bool Overrun;
 	bool isRTT;
 	bool isRenderFramebuffer;
+#ifdef __vita__
+	bool punchThroughUsesArrays;
+#endif
 	
 	FB_X_CLIP_type fb_X_CLIP;
 	FB_Y_CLIP_type fb_Y_CLIP;
@@ -308,6 +311,9 @@ struct rend_context
 		fZ_min = 1000000.0f;
 		fZ_max = 1.0f;
 		isRenderFramebuffer = false;
+#ifdef __vita__
+		punchThroughUsesArrays = false;
+#endif
 		matrices.Clear();
 		lightModels.Clear();
 	}
