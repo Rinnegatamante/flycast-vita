@@ -212,7 +212,8 @@ static bool portableRecordProtectionMatches(const PortableRecord& record)
 }
 static bool readPortableFile(const std::string& portablePath,
                              std::vector<PortableRecord>& records,
-                             std::vector<u8>& sources)
+                             std::vector<u8>& sources,
+                             u32 maxRecords = MaxPortableRecords)
 {
     FILE* file = fopen(portablePath.c_str(), "rb");
     if (!file)
@@ -228,7 +229,7 @@ static bool readPortableFile(const std::string& portablePath,
         && header.headerSize == sizeof(header)
         && header.recordSize == (legacy ? sizeof(LegacyPortableRecord)
                                         : sizeof(PortableRecord))
-        && header.count <= MaxPortableRecords
+        && header.count <= maxRecords
         && sourceBytes <= MaxPortableSourceBytes
         && header.gameIdentity == PortableGameIdentity
         && (legacy ? !header.reserved[0] : true)
@@ -236,7 +237,7 @@ static bool readPortableFile(const std::string& portablePath,
         && header.headerHash == portableHeaderHash(header);
     u64 digest = 0;
     if (valid) {
-        try { records.reserve(std::min<u32>(header.count, 16000)); }
+        try { records.reserve(header.count); }
         catch (...) { valid = false; }
     }
     for (u32 index = 0; index < header.count && valid; ++index) {
@@ -310,7 +311,8 @@ static bool readPortableCoverage()
     return !portableRecords.empty();
 }
 static bool readPortableHeader(const std::string& portablePath,
-                               PortableHeader& header)
+                               PortableHeader& header,
+                               u32 maxRecords = MaxPortableRecords)
 {
     FILE* file = fopen(portablePath.c_str(), "rb");
     if (!file)
@@ -325,7 +327,7 @@ static bool readPortableHeader(const std::string& portablePath,
         && header.headerSize == sizeof(header)
         && header.recordSize == (legacy ? sizeof(LegacyPortableRecord)
                                         : sizeof(PortableRecord))
-        && header.count <= MaxPortableRecords
+        && header.count <= maxRecords
         && (legacy ? !header.reserved[0]
                    : header.reserved[0] <= MaxPortableSourceBytes)
         && header.gameIdentity == PortableGameIdentity
@@ -341,7 +343,8 @@ static bool portableTrainingDiskUnchanged()
     if (!portableTrainingDiskExists)
         return false;
     PortableHeader current{};
-    if (!readPortableHeader(portableTrainingPath, current))
+    if (!readPortableHeader(portableTrainingPath, current,
+                            MaxPortableTrainingRecords))
         return false;
     return !memcmp(&current, &portableTrainingDiskHeader, sizeof(current));
 }
@@ -356,6 +359,10 @@ static bool savePortableTraining()
     const u32 diskSourceBytes = portableTrainingDiskExists
         && portableTrainingDiskHeader.version == PortableVersion
         ? portableTrainingDiskHeader.reserved[0] : 0;
+    if (portableTrainingRecords.size() > MaxPortableTrainingRecords) {
+        WARN_LOG(DYNAREC, "mvc2-portable-training: checkpoint refused; record limit exceeded");
+        return false;
+    }
     if (portableTrainingDiskExists
             && (portableTrainingRecords.size() < portableTrainingDiskHeader.count
                 || portableTrainingSources.size() < diskSourceBytes)) {
@@ -425,22 +432,24 @@ static bool beginPortableTraining()
         fclose(probe);
     if (exists && !readPortableFile(portableTrainingPath,
                                     portableTrainingRecords,
-                                    portableTrainingSources)) {
+                                    portableTrainingSources,
+                                    MaxPortableTrainingRecords)) {
         WARN_LOG(DYNAREC, "mvc2-portable-training: existing file rejected; collection disabled");
         return false;
     }
     portableTrainingDiskExists = exists;
     portableTrainingDiskHeader = PortableHeader{};
     if (exists && !readPortableHeader(portableTrainingPath,
-                                      portableTrainingDiskHeader)) {
+                                      portableTrainingDiskHeader,
+                                      MaxPortableTrainingRecords)) {
         WARN_LOG(DYNAREC, "mvc2-portable-training: existing header rejected; collection disabled");
         return false;
     }
-    if (portableTrainingRecords.size() >= MaxPortableRecords
+    if (portableTrainingRecords.size() >= MaxPortableTrainingRecords
             || portableTrainingSources.size() >= portableTrainingSourceLimit)
         portableTrainingSaturated = 1;
     try {
-        portableTrainingRecords.reserve(std::min<size_t>(MaxPortableRecords,
+        portableTrainingRecords.reserve(std::min<size_t>(MaxPortableTrainingRecords,
             portableTrainingRecords.size() + RecordReserveChunk));
         portableTrainingSources.reserve(std::min<size_t>(portableTrainingSourceLimit,
             portableTrainingSources.size() + 256 * 1024));
@@ -476,7 +485,7 @@ static void recordPortableSource(RuntimeBlockInfo* block)
         ? NoPortableSource : portableTrainingSources.size();
     record.sourceBytes = block->read_only ? 0 : record.guestBytes;
     const u32 guestOffset = record.guestPc & RAM_MASK;
-    if (portableTrainingRecords.size() >= MaxPortableRecords
+    if (portableTrainingRecords.size() >= MaxPortableTrainingRecords
             || portableTrainingSources.size() > portableTrainingSourceLimit
             || (record.sourceBytes && record.sourceBytes
                 > portableTrainingSourceLimit - portableTrainingSources.size())) {
@@ -529,7 +538,7 @@ static void recordPortableSource(RuntimeBlockInfo* block)
     const size_t previousSourceBytes = portableTrainingSources.size();
     try {
         if (portableTrainingRecords.size() == portableTrainingRecords.capacity())
-            portableTrainingRecords.reserve(std::min<size_t>(MaxPortableRecords,
+            portableTrainingRecords.reserve(std::min<size_t>(MaxPortableTrainingRecords,
                 portableTrainingRecords.capacity() + RecordReserveChunk));
         const size_t neededSourceBytes = portableTrainingSources.size()
             + record.sourceBytes;

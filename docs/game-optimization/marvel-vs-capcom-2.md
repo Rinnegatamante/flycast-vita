@@ -2015,13 +2015,67 @@ Packaging revalidated `ATTRIBUTE2=12`, Reduced SMC, 4:3, the capacity exit and
 the portable format. Independent archive inspection confirms that the
 embedded cache hash is the merged hash above.
 
+### Second external beta return integrated, 2026-09-22
+
+The second tester archive `cacheandlogtest-220926-#2.zip` has SHA256
+`57F208D1956D15BCBCC9125D19698F5CF867FDDF6653FB2A268C364BA71A87C7`.
+The returned v2 training shard has SHA256
+`1EE4DBF8E50D04D87A5F62A9970111238C1BB249B1A67CBFD7B9AC768B7AF603`
+and passes the portable format inspector: 65,970 records, 22,301 writable
+source variants, 327,226 source bytes, no internal duplicate identities and
+the expected MVC2 game identity. Its log is from the beta-6 executable: it
+loads the 82,757-record sorted canonical cache and reports canonical skips.
+Across two cold boots it shows 62 monotonic saves, 12 reset checkpoints,
+no saturation or I/O error and no crash/exception report. The two startup
+`pc=a0000000` blocks were skipped as expected. The last checkpoint is
+65,970 records at 57:44; the log continues for about 12 seconds afterward,
+so that unsaved final interval is not represented in the shard.
+
+Merging this shard into the first-return canonical cache yielded 148,726
+records. Only one input identity was duplicated, so the second return adds
+65,969 unique records. The merged file has 38,530 source-bearing writable
+variants, 565,852 source bytes, no duplicate variants and SHA256
+`46D892DF76A3EE574B590F2342DDDF12BF42EFD9E50205D54BFD133992639CBB`.
+It is stored as
+`build-vita-cache-normal/tester-returns/cacheandlogtest-220926-02/mvc2_portable_cache-after-return-02.bin`.
+
+The former 100,000-record bound was shared between canonical coverage and
+single-tester training. The canonical bound is now 200,000 records; the
+training shard remains limited to 100,000 records and 10 MiB of source.
+The portable reader reserves exactly the validated record count to avoid
+geometric vector overallocation. The host inspector now finds duplicate
+identities in sorted order; this makes validation of the larger cache
+practical without changing the portable file format or its build-independent
+guest identity.
+
+The Vita binary and VPK build completed, and the beta-7 candidate package is
+`build-vita-cache-normal/mvc2-beta-collector-beta7-portable2-return02-candidate.zip`,
+SHA256
+`BDA0FC751A03B38EB6E313992170C3C8506263FE992D656FDD87E48D6B505BA1`.
+Its GNU build ID is `c4e43182436ee0fdd3e245f359de3496458bde96`.
+Packaging checks `ATTRIBUTE2=12`, Reduced SMC, 4:3 and the exact embedded
+cache hash above. A 70-second DevKit cold-boot run is under
+`build-vita-cache-normal/devkit-logs/mvc2-beta7-return02-coldboot/20260922-220213/`
+and
+`build-vita-cache-normal/devkit-logs/mvc2-beta7-return02-coldboot-run/20260922-220217/`.
+The target loaded all 148,726 records (`sorted=1`), enabled all three HLE
+patches, entered the divide and copy patches, and rendered the game menu in
+4:3. The run showed no reported out-of-memory, I/O, crash or exception error.
+A fresh training shard contained one valid
+writable-source record, with canonical skips working. The harness ended the
+process after its observation window; this is not a game crash. The target's
+previous config, canonical cache and training shard were backed up and
+restored. This run verifies cold boot and menu, not fight correctness or
+full-speed gameplay. A representative slot-5 fight run remains pending
+because the DevKit is now in use by another session.
+
 ## Next evidence gate
 
-1. Distribute beta 6 `portable2-return01-canonicalskip-r2` with its updated
-   82,757-record canonical cache across played matches, stages, character
-   teams and between-fight transitions. Keep each portable training file, log
-   and useful savestate as a separate artifact rather than overwriting the
-   evidence.
+1. Once the DevKit is free, run a representative slot-5 match with the
+   148,726-record cache, checking memory stability, prewarm and gameplay.
+   Then distribute the validated package across varied teams, stages and
+   between-fight transitions. Keep every shard, log and useful savestate as
+   separate evidence.
 2. Merge every returned v2 training file with `mvc2-aot-pack
    --coverage-output`, inspect the coverage report and issue updated canonical
    caches. Never put host code or host addresses in this canonical artifact.

@@ -3,7 +3,7 @@ param(
     [string]$BuildDir = 'build-vita-cache-normal',
     [Parameter(Mandatory)] [string]$PortableCache,
     [string]$Config = 'scripts/mvc2-pal-beta-collector.cfg',
-    [string]$Version = 'beta6-portable2-return01-canonicalskip-r2',
+    [string]$Version = 'beta7-portable2-return02-candidate',
     [string]$Output = ''
 )
 
@@ -219,6 +219,9 @@ Test procedure
 - Collection stops at 100,000 records or 10 MiB of stored SH4 source. At
   either limit Flycast performs an immediate final checkpoint and closes only
   after that save succeeds. Copy the shard before starting the collector again.
+- The distributed canonical cache may contain up to 200,000 records assembled
+  from multiple testers. The separate training shard retains its 100,000
+  record limit, so this change does not increase its RAM reservation.
 - The 10 MiB limit counts only stored SH4 source, not the whole file. Each
   record also has fixed metadata, so the 100,000-record limit can close the app
   while mvc2_portable_training.bin is still well below 10 MiB. Do not use the

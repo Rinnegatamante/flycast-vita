@@ -3,6 +3,7 @@
 //     core/deps/xxHash/xxhash.c -o build-vita-tools/test-mvc2-native-cache.exe
 #include "hw/sh4/dyna/mvc2_native_format.h"
 #include <xxhash.h>
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -86,17 +87,15 @@ static void inspectPortable(const std::vector<uint8_t>& data) {
         exact += (record.flags & PortableExactSourceHash) != 0;
         writable += (record.flags & PortableWritableSource) != 0;
         withSource += hasPortableSource(record);
-        for (const PortableRecord& previous : records)
-            if (samePortableSource(record, previous)) {
-                ++duplicateVariants;
-                break;
-            }
         records.push_back(record);
     }
     if (sourceBytes)
         digest = XXH64(data.data() + offset, sourceBytes, digest);
     if (digest != header.payloadHash)
         throw std::runtime_error("portable payload checksum");
+    std::sort(records.begin(), records.end(), portableRecordLess);
+    for (size_t index = 1; index < records.size(); ++index)
+        duplicateVariants += samePortableSource(records[index - 1], records[index]);
     for (const PortableRecord& record : records)
         if (hasPortableSource(record)
                 && (record.flags & PortableExactSourceHash)

@@ -16,7 +16,10 @@ constexpr uint32_t MaxRelocations = 1024;
 constexpr uint32_t MaxTotalRelocations = 1000000;
 constexpr uint32_t LegacyPortableVersion = 1;
 constexpr uint32_t PortableVersion = 2;
-constexpr uint32_t MaxPortableRecords = 100000;
+// Canonical coverage grows across independent tester shards. Keep its bound
+// separate from the per-tester collection limit and its RAM footprint.
+constexpr uint32_t MaxPortableRecords = 200000;
+constexpr uint32_t MaxPortableTrainingRecords = 100000;
 constexpr uint32_t MaxPortableSourceBytes = 10 * 1024 * 1024;
 constexpr uint32_t NoPortableSource = UINT32_MAX;
 // Little-endian bytes are "MVC2US1\1". This format is intentionally tied to
