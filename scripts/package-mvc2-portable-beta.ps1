@@ -3,7 +3,7 @@ param(
     [string]$BuildDir = 'build-vita-cache-normal',
     [Parameter(Mandatory)] [string]$PortableCache,
     [string]$Config = 'scripts/mvc2-pal-beta-collector.cfg',
-    [string]$Version = 'beta5-portable2-spritefix-safeexit',
+    [string]$Version = 'beta6-portable2-return01-canonicalskip-r2',
     [string]$Output = ''
 )
 
@@ -193,7 +193,10 @@ What is build-independent
   Multiple tester shards are merged into the portable coverage file offline.
 
 Install
-1. Back up any existing mvc2_portable_training.bin and flycast.log.
+1. Back up any existing mvc2_portable_training.bin and flycast.log. If that
+   shard was already returned and merged into this package's canonical cache,
+   remove it from the Vita before first launch; otherwise return it for merge
+   before replacing it.
 2. Install Flycast-MVC2-$Version.vpk.
 3. Copy emu.cfg to ux0:data/flycast/emu.cfg.
 4. Copy mvc2_portable_cache.bin to
@@ -216,6 +219,10 @@ Test procedure
 - Collection stops at 100,000 records or 10 MiB of stored SH4 source. At
   either limit Flycast performs an immediate final checkpoint and closes only
   after that save succeeds. Copy the shard before starting the collector again.
+- The 10 MiB limit counts only stored SH4 source, not the whole file. Each
+  record also has fixed metadata, so the 100,000-record limit can close the app
+  while mvc2_portable_training.bin is still well below 10 MiB. Do not use the
+  file size as a capacity meter; the automatic exit is the completion signal.
 - If the app has not closed by itself, after the last scene either exit Flycast
   normally or leave it running for at least 140 seconds.
 

@@ -26,9 +26,11 @@ static std::unordered_multimap<u64, size_t, KeyHash> portableTrainingIndex;
 static bool initialized, enabled, recording, merging, validating, validateHits, reported;
 static bool portableRecording, portableTrainingDirty, portablePrewarming;
 static bool portableTrainingDiskExists, portableExitOnSaturation;
+static bool portableRecordsSorted;
 static std::atomic<bool> portableExitRequested{false};
 static PortableHeader portableTrainingDiskHeader;
 static u32 portableTrainingSaturated, portableTrainingInvalidSkipped;
+static u32 portableCanonicalSkips;
 static u32 mapGeneration, hits, misses, sourceRejects, usedRejects, duplicateSkips;
 static u32 validated, validationFailures, saturated;
 static int validationTRegister, validationFlagsCondition;
@@ -291,6 +293,8 @@ static bool readPortableCoverage()
     }
     portableRecords.swap(records);
     portableSources.swap(sources);
+    portableRecordsSorted = std::is_sorted(portableRecords.begin(),
+        portableRecords.end(), portableRecordLess);
     try { portableDone.assign(portableRecords.size(), 0); }
     catch (...) {
         std::vector<PortableRecord>().swap(portableRecords);
@@ -298,9 +302,10 @@ static bool readPortableCoverage()
         WARN_LOG(DYNAREC, "mvc2-portable: state allocation failed; ordinary JIT");
         return false;
     }
-    NOTICE_LOG(DYNAREC, "mvc2-portable: loaded=%u source_bytes=%u build_independent=1 budget_us=%u initial_budget_us=%u max_renders=%u",
+    NOTICE_LOG(DYNAREC, "mvc2-portable: loaded=%u source_bytes=%u sorted=%u build_independent=1 budget_us=%u initial_budget_us=%u max_renders=%u",
         (u32)portableRecords.size(),
         (u32)portableSources.size(),
+        portableRecordsSorted,
         portableBudgetUs, portableInitialBudgetUs, portableMaxRenders);
     return !portableRecords.empty();
 }
@@ -399,10 +404,10 @@ static bool savePortableTraining()
         valid = fclose(file) == 0 && valid;
     }
     valid = valid && rename(temporary.c_str(), portableTrainingPath.c_str()) == 0;
-    NOTICE_LOG(DYNAREC, "mvc2-portable-training: saved=%u source_bytes=%u saturated=%u io_error=%u path=%s invalid_skipped=%u",
+    NOTICE_LOG(DYNAREC, "mvc2-portable-training: saved=%u source_bytes=%u saturated=%u io_error=%u path=%s invalid_skipped=%u canonical_skipped=%u",
         (u32)portableTrainingRecords.size(), (u32)portableTrainingSources.size(),
         portableTrainingSaturated, !valid, portableTrainingPath.c_str(),
-        portableTrainingInvalidSkipped);
+        portableTrainingInvalidSkipped, portableCanonicalSkips);
     if (valid)
     {
         portableTrainingDirty = false;
@@ -493,6 +498,20 @@ static void recordPortableSource(RuntimeBlockInfo* block)
         u32 pageOffset = guestOffset & ~4095u;
         for (u32 page = 0; page < record.pageCount; ++page, pageOffset += 4096)
             record.pageHash[page] = XXH64(mem_b.data + pageOffset, 4096, 0);
+    }
+    if (portableRecordsSorted) {
+        const auto canonical = std::lower_bound(portableRecords.begin(),
+            portableRecords.end(), record, portableRecordLess);
+        if (canonical != portableRecords.end()
+                && samePortableSource(*canonical, record)
+                && (!(canonical->flags & PortableWritableSource)
+                    || (hasPortableSource(*canonical)
+                        && canonical->sourceBytes == record.sourceBytes
+                        && !memcmp(portableSources.data() + canonical->sourceOffset,
+                            mem_b.data + guestOffset, record.sourceBytes)))) {
+            ++portableCanonicalSkips;
+            return;
+        }
     }
     const auto range = portableTrainingIndex.equal_range(
         key(record.guestPc, record.fpuMode));
@@ -840,6 +859,8 @@ void mvc2NativeCacheReset()
     portableTrainingDiskHeader = PortableHeader{};
     portableTrainingSaturated = 0;
     portableTrainingInvalidSkipped = 0;
+    portableCanonicalSkips = 0;
+    portableRecordsSorted = false;
     portableEnabled = false;
     portableCursor = 0;
     portableTrainingSourceLimit = 0;

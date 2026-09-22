@@ -147,6 +147,23 @@ inline bool samePortableSource(const PortableRecord& left, const PortableRecord&
     return (left.flags & PortableExactSourceHash)
         || memcmp(left.pageHash, right.pageHash, sizeof(left.pageHash)) == 0;
 }
+inline bool portableRecordLess(const PortableRecord& left,
+                               const PortableRecord& right) {
+#define MVC2_CMP_PORTABLE(field) \
+    do { if (left.field != right.field) return left.field < right.field; } while (0)
+    MVC2_CMP_PORTABLE(guestPc);
+    MVC2_CMP_PORTABLE(fpuMode);
+    MVC2_CMP_PORTABLE(guestBytes);
+    MVC2_CMP_PORTABLE(flags);
+    MVC2_CMP_PORTABLE(pageCount);
+    MVC2_CMP_PORTABLE(sourceHash);
+    if (!(left.flags & PortableExactSourceHash)) {
+        for (uint32_t page = 0; page < MaxPages; ++page)
+            MVC2_CMP_PORTABLE(pageHash[page]);
+    }
+#undef MVC2_CMP_PORTABLE
+    return false;
+}
 inline bool validRecord(const Record& entry, uint32_t prefix, uint32_t previousEnd,
                         uint32_t codeCapacity, uint32_t ramMask) {
     if (entry.offset < prefix || entry.offset < previousEnd || (entry.offset & 3)

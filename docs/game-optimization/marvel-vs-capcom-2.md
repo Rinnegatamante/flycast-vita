@@ -1948,15 +1948,83 @@ The included v2 coverage has 16,304 records, 177 stored writable variants,
 2,558 source bytes, zero duplicate variants and SHA256
 `A0440CBB83786953C924ABBA67B42CAEA5E89616201AA760B2D97CDA1E484801`.
 
+### First external beta-5 return accepted, 2026-09-22
+
+The tester archive
+`cacheandlogtest-220926-#1.zip` has SHA256
+`6CB735762D5DBE788D389A29D2D763549B18303DC284D0173B83DD22BF231583`.
+Its returned v2 shard is structurally valid, has the expected MVC2 identity
+`013153553243564d`, contains 66,889 unique records and 236,068 bytes of stored
+SH4 source, and has SHA256
+`BA8B6C8E033483730190D1FFF8D54A5D2821116FDD4380E2E74E2924CD03E552`.
+The log covers seven cold boots and 49 successful monotonic saves, including
+eight reset checkpoints. It contains no saturation, I/O error, crash, critical
+or exception report. The seven rejected `pc=a0000000` blocks are the known
+unrepresentable startup block and were skipped rather than corrupting or
+saturating the shard.
+
+Merging the return with the 16,304-record canonical cache produced 82,757
+records: 66,453 genuinely new records and only 436 duplicates. The result has
+16,229 source-bearing exact variants, 238,626 source bytes, zero duplicate
+variants and SHA256
+`B4C0E7A556F35AB9563A502ABAAFCFBF5959AE10F2DBA5DC3DC5C921C652D18F`.
+It is stored as
+`build-vita-cache-normal/tester-returns/cacheandlogtest-220926-01/mvc2_portable_cache-after-return-01.bin`.
+
+The return also corrects the tester-facing capacity expectation. The 10 MiB
+ceiling applies only to stored guest source bytes; the shard was at 66.9% of
+the 100,000-record ceiling but only 2.25% of its source-byte ceiling. For this
+workload the record cap will be reached first, and the on-disk file may remain
+below 10 MiB. The packaging README now identifies automatic application exit,
+not file size, as the completion signal. The returned log ends about 100
+seconds after its last periodic save without a clean-stop line, so the file is
+valid but may omit the final unsaved interval; testers should exit normally or
+wait the documented 140 seconds before copying both artifacts.
+
+Loading both the new canonical cache and the already-merged 66,889-record
+tester shard would retain the same coverage twice in memory. Clearing the
+shard alone was also insufficient because the old collector would record
+canonical blocks again. The beta-6 collector now verifies that canonical
+records are packer-sorted and uses a binary search before every training
+insert. An exact existing canonical variant, including byte comparison for a
+stored writable-source record, is not added to training. This needs no large
+runtime hash table. A writable canonical identity without stored source is
+deliberately not skipped, so a future shard can supply and upgrade those bytes;
+three such records remain in this cache. The README tells a tester to remove a
+previous shard only after that shard has been returned and incorporated into
+the supplied canonical cache.
+
+A controlled 55-second target run is under
+`build-vita-cache-normal/devkit-logs/mvc2-beta6-canonical-skip-r2/20260922-110516/`
+and
+`build-vita-cache-normal/devkit-logs/mvc2-beta6-canonical-skip-r2-run/20260922-110521/`.
+It loaded all 82,757 records with `sorted=1`, started training at zero, booted
+T1212N with all three HLE entries enabled, rendered the 4:3 game and produced
+no crash or exception. No training file was created during the already-covered
+boot interval; the earlier collector produced hundreds of records there.
+After the run, the target's original config, 16,304-record canonical cache and
+training shard were restored, with exact before/after SHA256 matches for all
+three files.
+
+The updated collector package is
+`build-vita-cache-normal/mvc2-beta-collector-beta6-portable2-return01-canonicalskip-r2.zip`,
+SHA256
+`5FA96DDC6DF663178F3697400F7FF73A5927DA63148804FA21B00AD2C7C89026`.
+Its GNU build ID is `4edfb6403e3745905501f84004276ff80b06e30c`.
+Packaging revalidated `ATTRIBUTE2=12`, Reduced SMC, 4:3, the capacity exit and
+the portable format. Independent archive inspection confirms that the
+embedded cache hash is the merged hash above.
+
 ## Next evidence gate
 
-1. Distribute only beta 5 `spritefix-safeexit-r1` across played matches, stages,
-   character teams and between-fight transitions. Keep each portable training
-   file, log and useful savestate as a separate artifact rather than
-   overwriting the evidence.
-2. Merge returned v2 training files with `mvc2-aot-pack --coverage-output`,
-   inspect the coverage report and issue updated canonical caches. Never put
-   host code or host addresses in this canonical artifact.
+1. Distribute beta 6 `portable2-return01-canonicalskip-r2` with its updated
+   82,757-record canonical cache across played matches, stages, character
+   teams and between-fight transitions. Keep each portable training file, log
+   and useful savestate as a separate artifact rather than overwriting the
+   evidence.
+2. Merge every returned v2 training file with `mvc2-aot-pack
+   --coverage-output`, inspect the coverage report and issue updated canonical
+   caches. Never put host code or host addresses in this canonical artifact.
 3. Add compile cost and phase/first-use priority to portable coverage, then
    replace or reinforce the render-cadence heuristic with an explicit safe
    MvC2 loading/transition signal. Do not increase the 2 ms gameplay budget

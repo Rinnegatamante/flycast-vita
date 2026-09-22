@@ -261,20 +261,7 @@ PortableRecord makePortableRecord(const Record& source) {
 }
 
 bool portableLess(const PortableCandidate& left, const PortableCandidate& right) {
-    const PortableRecord& a = left.record;
-    const PortableRecord& b = right.record;
-#define CMP_PORTABLE(field) do { if (a.field != b.field) return a.field < b.field; } while (0)
-    CMP_PORTABLE(guestPc);
-    CMP_PORTABLE(fpuMode);
-    CMP_PORTABLE(guestBytes);
-    CMP_PORTABLE(flags);
-    CMP_PORTABLE(pageCount);
-    CMP_PORTABLE(sourceHash);
-    if (!(a.flags & PortableExactSourceHash))
-        for (uint32_t page = 0; page < MaxPages; ++page)
-            CMP_PORTABLE(pageHash[page]);
-#undef CMP_PORTABLE
-    return false;
+    return portableRecordLess(left.record, right.record);
 }
 
 std::vector<PortableCandidate> deduplicatePortable(
