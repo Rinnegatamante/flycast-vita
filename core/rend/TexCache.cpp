@@ -5,6 +5,9 @@
 #include "hw/pvr/pvr_mem.h"
 #include "hw/mem/_vmem.h"
 #include "hw/sh4/modules/mmu.h"
+#ifdef __vita__
+#include "imgread/common.h"
+#endif
 
 #include <algorithm>
 #include <mutex>
@@ -19,6 +22,79 @@ u32 palette_index;
 bool KillTex=false;
 #ifdef __vita__
 std::atomic<bool> mvc2ForceCpuPalettes{false};
+
+namespace {
+constexpr size_t Mvc2EffectVqBytes = 9 * 2048;
+struct Mvc2EffectVqAsset {
+	u32 texAddr;
+	u32 fad;
+	u64 expectedHash;
+	std::array<u8, Mvc2EffectVqBytes> bytes;
+	bool warned = false;
+};
+
+// These FADs identify two 256x256 RGB565 VQ atlases on the T1212N US v1.001
+// disc. Both matched earlier fight savestates but were sector-corrupted in the
+// tester's glitch state. No game data is embedded in the executable.
+Mvc2EffectVqAsset mvc2EffectVqAssets[] = {
+	{585216, 489520, 0xfcf0711a1b581f37ULL, {}},
+	{589824, 489529, 0xbabbb99aa824fb54ULL, {}},
+};
+std::atomic<bool> mvc2EffectVqReady{false};
+
+u64 mvc2EffectVqHash(const u8 *data, size_t size)
+{
+	u64 hash = 0xcbf29ce484222325ULL;
+	for (size_t i = 0; i < size; i++)
+		hash = (hash ^ data[i]) * 0x100000001b3ULL;
+	return hash;
+}
+
+const u8 *mvc2EffectVqFallback(TCW tcw, u32 width, u32 height, u32 sourceAddress)
+{
+	if (!mvc2EffectVqReady.load(std::memory_order_acquire)
+			|| !tcw.VQ_Comp || tcw.MipMapped || tcw.PixelFmt != Pixel565
+			|| width != 256 || height != 256)
+		return nullptr;
+	for (auto& asset : mvc2EffectVqAssets)
+	{
+		if (tcw.TexAddr != asset.texAddr)
+			continue;
+		if (mvc2EffectVqHash(&vram[sourceAddress], Mvc2EffectVqBytes) == asset.expectedHash)
+			return nullptr;
+		if (!asset.warned)
+		{
+			asset.warned = true;
+			WARN_LOG(RENDERER, "MVC2 VQ atlas changed at %06X; decoding from verified disc source", sourceAddress);
+		}
+		return asset.bytes.data();
+	}
+	return nullptr;
+}
+} // namespace
+
+void mvc2InitEffectVqGuard()
+{
+	mvc2EffectVqReady.store(false, std::memory_order_release);
+	if (settings.content.gameId != "T1212N"
+			|| !cfgLoadBool("perf", "Mvc2EffectVqGuard", true))
+		return;
+	extern Disc *disc;
+	if (disc == nullptr)
+		return;
+	for (auto& asset : mvc2EffectVqAssets)
+	{
+		asset.warned = false;
+		disc->ReadSectors(asset.fad, 9, asset.bytes.data(), 2048);
+		if (mvc2EffectVqHash(asset.bytes.data(), asset.bytes.size()) != asset.expectedHash)
+		{
+			WARN_LOG(RENDERER, "MVC2 VQ guard disabled: disc atlas at FAD %u does not match US v1.001", asset.fad);
+			return;
+		}
+	}
+	mvc2EffectVqReady.store(true, std::memory_order_release);
+	NOTICE_LOG(RENDERER, "MVC2 VQ guard armed for two verified effect atlases");
+}
 #endif
 u32 palette16_ram[1024];
 u32 palette32_ram[1024];
@@ -537,7 +613,8 @@ BaseTextureCacheData::BaseTextureCacheData(TSP tsp, TCW tcw)
 				sa += VQMipPoint[tsp.TexU + 3];
 			texconv = tex->VQ;
 			texconv32 = tex->VQ32;
-			size = width * height / 8 + 256 * 8;
+			// One byte selects each 2x2 texel block, after the 2 KiB codebook.
+			size = width * height / 4 + 256 * 8;
 		}
 		else
 		{
@@ -557,10 +634,10 @@ void BaseTextureCacheData::ComputeHash()
 	u32 hashSize = size;
 	if (tcw.VQ_Comp)
 	{
-		// The size for VQ textures wasn't correctly calculated.
-		// We use the old size to compute the hash for backward-compatibility
-		// with existing custom texture packs.
-		hashSize = size - 256 * 8;
+		// Preserve legacy custom-texture hashes, which covered only half of
+		// the VQ index stream. The full size above is still used for bounds
+		// checks and VRAM write protection.
+		hashSize = width * height / 8;
 	}
 	texture_hash = XXH32(&vram[sa], hashSize, 7);
 	if (IsPaletted())
@@ -635,6 +712,11 @@ void BaseTextureCacheData::Update()
 			return;
 		}
 	}
+#ifdef __vita__
+	const u8 *mvc2VqSource = mvc2EffectVqFallback(tcw, width, height, sa_tex);
+	if (mvc2VqSource != nullptr)
+		::vq_codebook = mvc2VqSource;
+#endif
 	if (config::CustomTextures)
 		custom_texture.LoadCustomTextureAsync(this);
 
@@ -704,7 +786,11 @@ void BaseTextureCacheData::Update()
 		else
 		{
 			pb32.init(width, height);
+#ifdef __vita__
+			texconv32(&pb32, mvc2VqSource != nullptr ? mvc2VqSource : &vram[sa], stride, height);
+#else
 			texconv32(&pb32, (u8*)&vram[sa], stride, height);
+#endif
 
 			// xBRZ scaling
 			if (textureUpscaling)
@@ -774,7 +860,11 @@ void BaseTextureCacheData::Update()
 		else
 		{
 			pb16.init(width, height);
+#ifdef __vita__
+			texconv(&pb16, mvc2VqSource != nullptr ? mvc2VqSource : &vram[sa], stride, height);
+#else
 			texconv(&pb16,(u8*)&vram[sa],stride,height);
+#endif
 		}
 		temp_tex_buffer = pb16.data();
 	}

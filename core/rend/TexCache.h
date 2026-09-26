@@ -21,6 +21,9 @@ extern bool KillTex;
 extern std::atomic<bool> mvc2ForceCpuPalettes;
 #endif
 extern bool palette_updated;
+#ifdef __vita__
+void mvc2InitEffectVqGuard();
+#endif
 
 extern u32 detwiddle[2][11][1024];
 

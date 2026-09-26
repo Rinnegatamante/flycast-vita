@@ -35,6 +35,9 @@
 #include "debug/gdb_server.h"
 #include "hw/pvr/Renderer_if.h"
 #include "rend/CustomTexture.h"
+#ifdef __vita__
+#include "rend/TexCache.h"
+#endif
 #include "hw/arm7/arm7_rec.h"
 #include "network/ggpo.h"
 #include "hw/mem/mem_watch.h"
@@ -714,6 +717,7 @@ void loadGameSpecificSettings()
 		config::ScreenStretching.override(100);
 		NOTICE_LOG(BOOT, "Forcing 4:3 presentation for Marvel vs. Capcom 2");
 	}
+	mvc2InitEffectVqGuard();
 #endif
 
 	// The product id is now known. Candidate bytes are verified lazily when
