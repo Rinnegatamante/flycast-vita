@@ -2131,11 +2131,55 @@ The Vita ELF, SELF and VPK built with LTO off. Packaging verified
 embedded canonical-cache hash. Device execution remains unverified: the
 configured DevKit is connected to an unrelated project.
 
+### Slot-5 paletted sprite-edge correction, 2026-09-26
+
+The original slot-5 fight reproduces the stray coloured one-pixel segments
+on the left character. Isolating render lists showed that suppressing the
+translucent list removed the character, whereas suppressing opaque or
+punch-through did not remove the lines. Forcing texture clamp and switching
+to CPU palettes also left them visible. The earlier punch-through strip
+change therefore was not the cause or the fix for these particular lines.
+
+On Vita, MVC2 (`T1212N`) now moves UVs of four-vertex, paletted translucent
+subrectangle quads inward by half a source texel. It skips full-texture and
+invalid quads, changes no geometry, and can be disabled for comparison with
+`[perf] Mvc2TranslucentUvInset = no` (default: enabled). No other game or
+platform uses this adjustment.
+
+A same-binary A/B used the same slot-5 state and changed only that config
+option. A temporary capture recorded 120 consecutive native rendered frames
+per side at 220x380 pixels, then was removed from the shipping source. The
+side-by-side 50-fps video is
+`build-vita-cache-normal/devkit-logs/mvc2-slot5-sprite-compare-20260926.mp4`
+(left: disabled; right: enabled). The underlying clips, raw RGBA frames,
+logs and 12-frame contact sheets are in
+`build-vita-cache-normal/devkit-logs/mvc2-slot5-native-sprite-inset-off/20260926-171715/run-001/`
+and
+`build-vita-cache-normal/devkit-logs/mvc2-slot5-native-sprite-inset-on/20260926-171523/run-001/`.
+In the fixed off-sprite ROI (x=0..29, y=30..239 within each crop), the
+red/orange or cyan stray-line detector found 46/120 affected frames and 520
+pixels with the option off, versus 0/120 and zero pixels with it on. This
+detector is deliberately limited to that ROI; visual inspection of the clip
+and the user's live DevKit check independently confirmed the lines disappeared
+in this savestate. This does not establish whole-game graphics correctness or
+resolve the separate, rare multicolour rectangular hit-effect fault.
+
+The final build without capture code is
+`build-vita-cache-normal/Flycast.vpk` (SHA256
+`778AB581EEA7765A35387EE1B54759838D1B288B266399FAE3F9571B191935B0`);
+its SELF is `build-vita-cache-normal/eboot.bin` (SHA256
+`C4D9E0680183C479F863D065B7BE9E0D570B1E2D2791D2DCBA13631F3A7DFB22`).
+The Release/LTO-off build and VPK packaging passed, with the sibling
+`sce_sys/param.sfo` checked for `ATTRIBUTE2=12`. The exact post-capture binary
+was not re-run on the device. The DevKit's prior `emu.cfg` was restored and
+verified byte-for-byte by SHA256; only the two temporary raw clip files were
+removed from its storage after the host copies had been retained.
+
 ## Next evidence gate
 
-1. Once the DevKit is free, cold-boot the 219,950-record beta to check memory,
-   then run a representative slot-5 match for correctness and gameplay.
-   Reproduce the reported persistent graphics fault and compare the same
+1. Cold-boot the 219,950-record beta to check memory, then run varied matches
+   for correctness and gameplay. Reproduce the separate persistent
+   multicolour hit-effect fault and compare the same
    fight before/after the two diagnostic buttons; obtain the mid-fight state.
    Then distribute the validated package across varied teams, stages and
    between-fight transitions. Keep every shard, log and useful savestate as

@@ -1274,6 +1274,56 @@ static void fix_texture_bleeding(const List<PolyParam> *list)
 	}
 }
 
+#ifdef __vita__
+// Slot-5 footage shows coloured one-pixel lines at MvC2's translucent,
+// paletted quad edges. Sampling half a source texel inside each sub-rectangle
+// removes those lines in the controlled A/B capture without changing geometry.
+static void inset_mvc2_translucent_quads()
+{
+	const u32 *indices = vd_rc.idx.head();
+	Vertex *vertices = vd_rc.verts.head();
+	for (const PolyParam& poly : vd_rc.global_param_tr)
+	{
+		if (!poly.pcw.Texture || poly.count != 4
+				|| (poly.tcw.PixelFmt != PixelPal4 && poly.tcw.PixelFmt != PixelPal8))
+			continue;
+		bool validQuad = true;
+		float minU = 1.f, minV = 1.f, maxU = 0.f, maxV = 0.f;
+		for (u32 i = 0; i < 4; i++)
+		{
+			for (u32 j = 0; j < i; j++)
+				if (indices[poly.first + i] == indices[poly.first + j])
+					validQuad = false;
+			const Vertex& v = vertices[indices[poly.first + i]];
+			if (!std::isfinite(v.u) || !std::isfinite(v.v))
+				validQuad = false;
+			minU = std::min(minU, v.u);
+			maxU = std::max(maxU, v.u);
+			minV = std::min(minV, v.v);
+			maxV = std::max(maxV, v.v);
+		}
+		if (!validQuad)
+			continue;
+		const float du = 0.5f / (8 << poly.tsp.TexU);
+		const float dv = 0.5f / (8 << poly.tsp.TexV);
+		const bool insetU = minU >= 0.f && maxU <= 1.f && maxU - minU > 2.f * du
+				&& maxU - minU < 0.995f;
+		const bool insetV = minV >= 0.f && maxV <= 1.f && maxV - minV > 2.f * dv
+				&& maxV - minV < 0.995f;
+		if (!insetU && !insetV)
+			continue;
+		for (u32 i = 0; i < 4; i++)
+		{
+			Vertex& v = vertices[indices[poly.first + i]];
+			if (insetU)
+				v.u = minU + du + (v.u - minU) * (1.f - 2.f * du / (maxU - minU));
+			if (insetV)
+				v.v = minV + dv + (v.v - minV) * (1.f - 2.f * dv / (maxV - minV));
+		}
+	}
+}
+#endif
+
 static bool ta_parse_vdrc(TA_context* ctx)
 {
 	ctx->rend_inuse.lock();
@@ -1399,6 +1449,11 @@ static bool ta_parse_vdrc(TA_context* ctx)
 		fix_texture_bleeding(&vd_rc.global_param_pt);
 		fix_texture_bleeding(&vd_rc.global_param_tr);
 	}
+#ifdef __vita__
+	if (!overrun && settings.content.gameId == "T1212N"
+			&& cfgLoadBool("perf", "Mvc2TranslucentUvInset", true))
+		inset_mvc2_translucent_quads();
+#endif
 	if (rv && !overrun)
 	{
 		u32 xmin, xmax, ymin, ymax;

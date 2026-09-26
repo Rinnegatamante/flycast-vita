@@ -18,6 +18,13 @@ param(
     [ValidateRange(0, 120)]
     [int]$PostCompletionSeconds = 5,
     [switch]$Screenshot,
+    [ValidateRange(0, 1800)]
+    [int]$CaptureStartSeconds = 0,
+    [ValidateRange(0, 1800)]
+    [int]$CaptureDurationSeconds = 0,
+    [ValidateRange(100, 5000)]
+    [int]$CaptureIntervalMilliseconds = 750,
+    [switch]$PreserveConnection,
     [switch]$NoDebug
 )
 
@@ -61,6 +68,10 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
 if ($RunName -notmatch '^[A-Za-z0-9._-]+$') {
     throw 'RunName may contain only letters, digits, dot, underscore and dash.'
 }
+if ($CaptureDurationSeconds -gt 0 -and $ObservationSeconds -gt 0 -and
+    $CaptureStartSeconds + $CaptureDurationSeconds -gt $ObservationSeconds) {
+    throw 'Frame capture must finish before the fixed observation window.'
+}
 
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $resolvedBuildDir = Resolve-FromRoot -Path $BuildDir -Root $root
@@ -94,7 +105,9 @@ New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
 $sessionRoot = Join-Path $logRoot ([DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Path $sessionRoot -Force | Out-Null
 
-& $script:psp2ctrl force-disconnect $Target | Out-Null
+if (-not $PreserveConnection) {
+    & $script:psp2ctrl force-disconnect $Target | Out-Null
+}
 Invoke-Ctrl -Arguments @('connect', $Target)
 
 try {
@@ -134,6 +147,13 @@ try {
         $completionObserved = $false
         $fixedWindowComplete = $false
         $observationDeadline = $null
+        $captureDir = Join-Path $runDir 'frames'
+        $captureLog = [Collections.Generic.List[object]]::new()
+        $nextCapture = $started.AddSeconds($CaptureStartSeconds)
+        $captureEnd = $nextCapture.AddSeconds($CaptureDurationSeconds)
+        if ($CaptureDurationSeconds -gt 0) {
+            New-Item -ItemType Directory -Path $captureDir -Force | Out-Null
+        }
 
         while (-not $run.HasExited -and [DateTime]::UtcNow -lt $deadline) {
             $console = ''
@@ -177,6 +197,21 @@ try {
                 Write-Host "[$RunName] Fixed observation window completed."
             }
 
+            if ($CaptureDurationSeconds -gt 0 -and -not $fixedWindowComplete -and
+                [DateTime]::UtcNow -ge $nextCapture -and
+                [DateTime]::UtcNow -lt $captureEnd) {
+                $framePath = Join-Path $captureDir ('frame-{0:D4}.bmp' -f $captureLog.Count)
+                $elapsedMs = [int]([DateTime]::UtcNow - $started).TotalMilliseconds
+                if (Save-Screenshot -Path $framePath -TargetId $Target) {
+                    $captureLog.Add([pscustomobject]@{
+                        frame = $captureLog.Count
+                        elapsed_ms = $elapsedMs
+                        path = [IO.Path]::GetFileName($framePath)
+                    })
+                }
+                $nextCapture = [DateTime]::UtcNow.AddMilliseconds($CaptureIntervalMilliseconds)
+            }
+
             if ($null -ne $observationDeadline -and
                 [DateTime]::UtcNow -ge $observationDeadline) {
                 if ($Screenshot) {
@@ -199,6 +234,10 @@ try {
             throw "psp2run exceeded the ${Timeout}s target timeout."
         }
         $run.WaitForExit()
+        if ($CaptureDurationSeconds -gt 0) {
+            $captureLog | Export-Csv -LiteralPath (Join-Path $captureDir 'timestamps.csv') -NoTypeInformation
+            Write-Host "[$RunName] Captured $($captureLog.Count) frames in $captureDir"
+        }
         if ($null -ne $inputProcess -and -not $inputProcess.HasExited) {
             Stop-Process -Id $inputProcess.Id -ErrorAction SilentlyContinue
         }
@@ -229,5 +268,7 @@ try {
         }
     }
 } finally {
-    & $script:psp2ctrl disconnect $Target | Out-Null
+    if (-not $PreserveConnection) {
+        & $script:psp2ctrl disconnect $Target | Out-Null
+    }
 }
