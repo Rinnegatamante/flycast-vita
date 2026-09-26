@@ -1882,16 +1882,16 @@ Testers return
 `mvc2_portable_training.bin` and `flycast.log`; changing Flycast does not
 invalidate or require re-dumping the portable training file.
 
-### Punch-through sprite fix and saturation-safe beta 5, 2026-09-17
+### Punch-through strip experiment and saturation-safe beta 5, 2026-09-17
 
 Savestate slot 5 exposed long one-pixel colour slivers extending from the
 left-side character sprite. Forcing nearest filtering, disabling the upscale
 bleeding fix, rendering at 480p and using the full shader path did not remove
-them. Converting every strip to independent triangles removed the slivers but
-also dropped HUD geometry, so that experiment was rejected. The retained cause
-is narrower: Vita's merged punch-through index stream joined independent MVC2
-sprite strips with degenerate connector triangles. On this renderer those
-connectors were not reliably rasterisation-free.
+them. Converting every strip to independent triangles removed the prominent
+sliver in the sampled image but also dropped HUD geometry, so that experiment
+was rejected. The remaining hypothesis was that Vita's merged punch-through
+index stream joined independent MVC2 sprite strips with degenerate connector
+triangles; this was not proven to explain every visible line.
 
 For MVC2 only, punch-through geometry now keeps the original array-strip
 ranges and VitaGL submits equivalent consecutive states with
@@ -1906,7 +1906,10 @@ The deterministic before/after captures are under
 `build-vita-cache-normal/devkit-logs/mvc2-slot5-deterministic-merged-final/20260916-182348/`
 and
 `build-vita-cache-normal/devkit-logs/mvc2-slot5-noskip-multidraw/20260916-184030/`.
-The latter retains the complete HUD and removes the sprite slivers. Two paired
+The latter retains the complete HUD and appeared to remove the prominent
+sliver in the sampled frame. The user later confirmed that lines were still
+visible even when replaying this original slot-5 savestate; this experiment
+must not be described as a sprite-line fix. Two paired
 10-second runs of the same final binary are recorded in
 `build-vita-cache-normal/devkit-logs/mvc2-slot5-multidraw-ab/20260916-184222/results.csv`.
 The merged path measured 1.000000x and 1.000200x; multidraw measured 1.000200x
@@ -1914,8 +1917,8 @@ and 1.001502x, so no performance regression was measurable. The final combined
 binary completed the slot-5 interval at 500 renders in 9.979 wall seconds
 (1.002104x). Its screenshot is
 `build-vita-cache-normal/devkit-logs/mvc2-final-slot5-sprite-cache-exit-1-final/20260917-002926/run-001/final.bmp`.
-This is visual and speed evidence for that captured scene, not every MVC2
-effect or stage.
+This is speed evidence and one-frame visual evidence for that captured scene,
+not proof that the underlying line defect was resolved.
 
 The beta collector now treats either 100,000 records or 10 MiB of stored SH4
 source as final capacity. Saturation bypasses the periodic deadline, writes an
@@ -2096,13 +2099,14 @@ stored source. The portable format and build-independent identity are
 unchanged. This larger cache needs a Vita cold-boot memory test before broad
 distribution.
 
-The four included screenshots show that the earlier slot-5 punch-through
-strip correction was **not** a general sprite-line fix. Fine stray segments
+The four included screenshots and the user's recheck of slot 5 show that the
+earlier punch-through strip change did **not** fix the sprite lines, even in
+the original savestate. Fine stray segments
 remain in `weirdLinesInSprites.png`; `graphicGlitchHit.png` and both
 `probablyGraphicGlitch*.png` captures show multicolour rectangular effects
 during hits/moves. The tester says the latter can appear roughly once per 20
 fights and then remain through the fight. Those facts do not prove the cause:
-the previous slot-5 A/B isolated one punch-through scene, while these may
+the previous slot-5 visual A/B relied on sampled frames, while these may
 involve a different geometry list, a stale texture or palette state. No
 savestate or exact controller sequence for these frames was returned.
 
