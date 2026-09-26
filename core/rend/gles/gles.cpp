@@ -1450,7 +1450,12 @@ void OSD_DRAW(bool clear_screen)
 bool OpenGLRenderer::Process(TA_context* ctx)
 {
 	if (KillTex)
+	{
 		TexCache.Clear();
+		if (settings.content.gameId == "T1212N"
+				&& cfgLoadBool("perf", "Mvc2GraphicsDebug", false))
+			NOTICE_LOG(RENDERER, "MVC2 graphics diagnostic: texture cache refreshed");
+	}
 	TexCache.Cleanup();
 
 	if (ctx->rend.isRenderFramebuffer)

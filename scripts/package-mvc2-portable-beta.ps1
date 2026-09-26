@@ -3,7 +3,7 @@ param(
     [string]$BuildDir = 'build-vita-cache-normal',
     [Parameter(Mandatory)] [string]$PortableCache,
     [string]$Config = 'scripts/mvc2-pal-beta-collector.cfg',
-    [string]$Version = 'beta7-portable2-return02-candidate',
+    [string]$Version = 'beta8-portable2-return03-diagnostic-r2',
     [string]$Output = ''
 )
 
@@ -129,6 +129,7 @@ $requiredConfig = @(
     '(?m)^Mvc2PortableTrainingSourceLimitBytes\s*=\s*10485760\s*$',
     '(?m)^Mvc2PortableExitOnSaturation\s*=\s*yes\s*$',
     '(?m)^Mvc2PunchThroughMultiDraw\s*=\s*yes\s*$',
+    '(?m)^Mvc2GraphicsDebug\s*=\s*yes\s*$',
     '(?m)^rend\.WideScreen\s*=\s*no\s*$',
     '(?m)^rend\.WidescreenGameHacks\s*=\s*no\s*$',
     '(?m)^rend\.ScreenStretching\s*=\s*100\s*$'
@@ -219,7 +220,7 @@ Test procedure
 - Collection stops at 100,000 records or 10 MiB of stored SH4 source. At
   either limit Flycast performs an immediate final checkpoint and closes only
   after that save succeeds. Copy the shard before starting the collector again.
-- The distributed canonical cache may contain up to 200,000 records assembled
+- The distributed canonical cache may contain up to 250,000 records assembled
   from multiple testers. The separate training shard retains its 100,000
   record limit, so this change does not increase its RAM reservation.
 - The 10 MiB limit counts only stored SH4 source, not the whole file. Each
@@ -228,11 +229,19 @@ Test procedure
   file size as a capacity meter; the automatic exit is the completion signal.
 - If the app has not closed by itself, after the last scene either exit Flycast
   normally or leave it running for at least 140 seconds.
+- If a persistent sprite/effect glitch appears, take a screenshot and save a
+  state while it is visible. Then reopen the pause menu and press
+  'Refresh textures (diagnostic)'. Take another screenshot after resuming and
+  report whether the SAME glitch cleared or remained. If it remains, reopen
+  the menu and press 'Use CPU palettes (diagnostic)', then capture one more
+  screenshot. Each button resumes the game and records its action in the log.
+  These are diagnostic switches, not claimed fixes; include the state, all
+  screenshots and flycast.log.
 
 Return these files
   ux0:data/flycast/data/mvc2_portable_training.bin
   ux0:data/flycast/data/flycast.log
-  any crash XML/core dump or savestate reproducing a visible stutter
+  any crash XML/core dump or savestate reproducing a visible fault
   a short note with stage, teams and transitions tested
 
 Safety retained

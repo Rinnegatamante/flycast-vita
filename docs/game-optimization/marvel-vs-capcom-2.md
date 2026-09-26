@@ -2069,10 +2069,70 @@ restored. This run verifies cold boot and menu, not fight correctness or
 full-speed gameplay. A representative slot-5 fight run remains pending
 because the DevKit is now in use by another session.
 
+### Third tester return and unresolved graphics faults, 2026-09-26
+
+The tester archive `cacheandlogtest-260926-#3.zip` has SHA256
+`76A87C3AEA71FF2EF1B40335B9244F4F5E5C0ECC6783D5F331D4E323BE347E3F`.
+Its v2 training shard has SHA256
+`F916675A9C2F196C87A49B7C3E6D043C838D440A44F54789D47F29BAAF21813E`
+and passes the portable inspector: 71,226 records, 29,245 writable source
+variants, 422,366 source bytes, no internal duplicate identities and the
+expected MVC2 identity. The log loads the 148,726-record canonical cache on
+five cold boots and includes 101 successful saves and 18 reset checkpoints;
+no saturation, I/O error or crash report was found. Its final save has 71,226
+records at 26:45 of the last session; the log continues to 28:28, so the
+last unsaved interval is not in the shard.
+
+Merging with the second-return canonical cache gives 219,950 unique records:
+71,224 are new and two overlap. The new canonical has 67,775 stored
+writable-source variants, 988,218 source bytes, zero duplicate identities,
+and SHA256
+`95088D74C6432CF9474D4E77A83ECE24B91C83C4A262A7D84E7325320B5CEBA4`.
+It is at
+`build-vita-cache-normal/tester-returns/cacheandlogtest-260926-03/mvc2_portable_cache-after-return-03.bin`.
+The canonical reader/packer bound is 250,000 records to admit this return;
+the independent tester training bound stays 100,000 records and 10 MiB of
+stored source. The portable format and build-independent identity are
+unchanged. This larger cache needs a Vita cold-boot memory test before broad
+distribution.
+
+The four included screenshots show that the earlier slot-5 punch-through
+strip correction was **not** a general sprite-line fix. Fine stray segments
+remain in `weirdLinesInSprites.png`; `graphicGlitchHit.png` and both
+`probablyGraphicGlitch*.png` captures show multicolour rectangular effects
+during hits/moves. The tester says the latter can appear roughly once per 20
+fights and then remain through the fight. Those facts do not prove the cause:
+the previous slot-5 A/B isolated one punch-through scene, while these may
+involve a different geometry list, a stale texture or palette state. No
+savestate or exact controller sequence for these frames was returned.
+
+Beta 8 adds two opt-in, same-fight diagnostic buttons to the MVC2 pause menu:
+`Refresh textures` clears the GL texture cache on the next render, and
+`Use CPU palettes` disables the GPU paletted-texture path and also clears
+the cache. Both actions log their request and the cache refresh. The tester
+should save a state and capture the faulty frame first, then compare a
+screenshot after each action while the same fight is still running. Clearing
+the defect with the first button would implicate stale texture state;
+clearing it only with CPU palettes would narrow the palette path. Persistence
+after both would redirect analysis toward geometry, shader or guest data.
+Neither switch is being claimed as a fix.
+
+The diagnostic package is
+`build-vita-cache-normal/mvc2-beta-collector-beta8-portable2-return03-diagnostic-r2.zip`,
+SHA256
+`ACA958501A467C0D32EF8D32A859AF9908C606BCC349502434E16E28A9D68621`,
+GNU build ID `7c048e255669551c58b576c42d5ce57b207851e2`.
+The Vita ELF, SELF and VPK built with LTO off. Packaging verified
+`ATTRIBUTE2=12`, Reduced SMC, 4:3, the diagnostic config and the exact
+embedded canonical-cache hash. Device execution remains unverified: the
+configured DevKit is connected to an unrelated project.
+
 ## Next evidence gate
 
-1. Once the DevKit is free, run a representative slot-5 match with the
-   148,726-record cache, checking memory stability, prewarm and gameplay.
+1. Once the DevKit is free, cold-boot the 219,950-record beta to check memory,
+   then run a representative slot-5 match for correctness and gameplay.
+   Reproduce the reported persistent graphics fault and compare the same
+   fight before/after the two diagnostic buttons; obtain the mid-fight state.
    Then distribute the validated package across varied teams, stages and
    between-fight transitions. Keep every shard, log and useful savestate as
    separate evidence.

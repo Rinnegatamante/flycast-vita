@@ -17,6 +17,9 @@
 const u8 *vq_codebook;
 u32 palette_index;
 bool KillTex=false;
+#ifdef __vita__
+std::atomic<bool> mvc2ForceCpuPalettes{false};
+#endif
 u32 palette16_ram[1024];
 u32 palette32_ram[1024];
 u32 pal_hash_256[4];

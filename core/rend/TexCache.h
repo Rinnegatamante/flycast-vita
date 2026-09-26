@@ -17,6 +17,9 @@ extern bool fog_needs_update;
 extern u32 pal_hash_256[4];
 extern u32 pal_hash_16[64];
 extern bool KillTex;
+#ifdef __vita__
+extern std::atomic<bool> mvc2ForceCpuPalettes;
+#endif
 extern bool palette_updated;
 
 extern u32 detwiddle[2][11][1024];
@@ -682,6 +685,11 @@ public:
 
 	static bool IsGpuHandledPaletted(TSP tsp, TCW tcw)
 	{
+#ifdef __vita__
+		if (mvc2ForceCpuPalettes.load(std::memory_order_relaxed)
+				&& settings.content.gameId == "T1212N")
+			return false;
+#endif
 		// Some palette textures are handled on the GPU
 		// This is currently limited to textures using nearest filtering and not mipmapped.
 		// Enabling texture upscaling or dumping also disables this mode.

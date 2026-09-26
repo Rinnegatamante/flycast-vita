@@ -41,6 +41,7 @@
 #include "log/LogManager.h"
 #include "emulator.h"
 #include "rend/mainui.h"
+#include "rend/TexCache.h"
 #include "lua/lua.h"
 #include "gui_chat.h"
 #include "imgui_driver.h"
@@ -611,6 +612,30 @@ static void gui_display_commands()
         ImGui::PopStyleVar();
 	}
 	ImGui::Columns(1, nullptr, false);
+
+#ifdef __vita__
+	if (settings.content.gameId == "T1212N"
+			&& cfgLoadBool("perf", "Mvc2GraphicsDebug", false)
+			&& ImGui::Button("Refresh textures (diagnostic)", ScaledVec2(300, 50)))
+	{
+		NOTICE_LOG(RENDERER, "MVC2 graphics diagnostic: texture cache refresh requested");
+		KillTex = true;
+		gui_state = GuiState::Closed;
+	}
+	if (settings.content.gameId == "T1212N"
+			&& cfgLoadBool("perf", "Mvc2GraphicsDebug", false)
+			&& ImGui::Button(mvc2ForceCpuPalettes.load(std::memory_order_relaxed)
+				? "Use GPU palettes (diagnostic)"
+				: "Use CPU palettes (diagnostic)", ScaledVec2(300, 50)))
+	{
+		const bool useCpu = !mvc2ForceCpuPalettes.load(std::memory_order_relaxed);
+		mvc2ForceCpuPalettes.store(useCpu, std::memory_order_relaxed);
+		NOTICE_LOG(RENDERER, "MVC2 graphics diagnostic: CPU palettes %s",
+				useCpu ? "enabled" : "disabled");
+		KillTex = true;
+		gui_state = GuiState::Closed;
+	}
+#endif
 
 	// Exit
 	if (ImGui::Button("Exit", ScaledVec2(300, 50)
