@@ -2210,10 +2210,13 @@ and 0.8030. The candidate was reverted. The local vitaGL implementation copies
 recently used texture storage before sub-image modification, explaining a
 plausible extra cost; that explanation is not a measured allocation breakdown.
 
-An opt-in raw-VRAM hash skip then avoided upload when a twiddled Pal4 texture
+An opt-in raw-VRAM hash skip then avoided upload when a Pal4 texture
 and its relevant palette were unchanged in the same cache entry. In one
-35-second run, 126,976 Pal4 updates included 62,202 compatible twiddled
-updates, of which 7,491 (12.0%) reused the previous texels. The same-SELF,
+35-second run, 126,976 Pal4 updates included 62,202 updates admitted by a
+mistaken `ScanOrder` guard, of which 7,491 (12.0%) reused the previous texels.
+For paletted textures those bits overlap `PalSelect`; the guard did not
+distinguish twiddled from linear layout, and the 12.0% is not a general Pal4
+reuse rate. The same-SELF,
 same-state 16-guest-second comparison yielded 0.80128 with the skip and
 0.80548 without it (799 rendered guest frames in both). It was reverted;
 neither result is full speed. Diagnostic logs are under
@@ -2232,6 +2235,45 @@ cross-address reuse over this and varied fights, before allocating an entire
 fighter set. Keeping only raw 4-bpp source in CPU RAM would reduce disc/VRAM
 work but still require decoding and GPU upload, so it alone would not remove
 the measured renderer cost.
+
+### Bounded resident Pal4 experiment, 2026-09-28
+
+The 35-second source-content survey on the tester's low-FPS slot-7 state saw
+roughly 127,000 Pal4 updates. Its simulated 4 MiB and 16 MiB LRU windows
+reported 66.5% and 72.1% reuse respectively at 122,880 updates. The survey
+key incorrectly included `TCW.ScanOrder` and `StrideSel`, which overlap
+`PalSelect` for Pal4; these are conservative lower bounds, not exact cache-hit
+rates. The diagnostic key has since been corrected.
+
+An opt-in 4,096-entry resident cache now retains separate vitaGL texture
+objects for 32x32 GPU-paletted Pal4 contents. It uses a 64-bit content key
+plus bytewise verification, pins live objects, evicts only unpinned LRU
+entries, and falls back to the ordinary upload path on collision or capacity
+failure. The budget is approximately 4 MiB of GPU indices plus 2 MiB of raw
+CPU snapshots and container overhead; it is not an entire-fighter preload.
+`[perf] Mvc2ResidentPal4Cache` defaults to `no`. It is restricted to the
+exact MvC2 game ID, with custom textures, dumps, upscaling, VQ and mipmaps
+excluded.
+
+Four same-SELF runs alternated off/on/on/off with the same tester state and
+deterministic dash/assist input. Over the common 16 guest seconds (799 guest
+renders), off took 19.884 and 19.799 wall seconds (speed ratios 0.804667 and
+0.808122); on took 19.646 and 19.575 seconds (0.814415 and 0.817369).
+The roughly 1.2% gain is repeatable in this short scene but far below the
+approximately 20% deficit and not enough to enable the feature by default.
+One on run reported 76,171 hits from 114,688 lookups, 38,517 uploads and
+34,421 evictions. Two end-frame screenshots looked plausible, but they do not
+establish transition or whole-game correctness. Evidence is under
+`build-vita-cache-resident/devkit-logs/mvc2-resident-{off,on}-{a,b}/`.
+
+A 20-second detailed frame-trace attempt was inconclusive: CSV export was
+still in progress when the test app stopped, so the saved file is truncated.
+The off run was interrupted when RE4 resumed on the shared DevKit. The trace
+build now supports `[perf] FrameTraceSummaryOnly = yes`, which logs complete
+per-kind counts and wall durations before any CSV write; use that for the next
+short A/B when the DevKit is free. Do not treat the truncated CSV as a valid
+profile. After these runs, the DevKit's original config and slot-7 state were
+restored and read back with matching SHA256.
 
 The optional `VITA_MVC2_STANDALONE` menu-free build boots the fixed disc path
 and removes approximately 1.35 MiB of loaded text/data versus the full UI

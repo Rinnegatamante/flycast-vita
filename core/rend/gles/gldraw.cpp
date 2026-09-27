@@ -171,7 +171,7 @@ __forceinline
 
 	if (texture != nullptr)
 	{
-		glcache.BindTexture(GL_TEXTURE_2D, texture->texID);
+		glcache.BindTexture(GL_TEXTURE_2D, texture->boundTextureId());
 
 		SetTextureRepeatMode(GL_TEXTURE_WRAP_S, gp->tsp.ClampU, gp->tsp.FlipU);
 		SetTextureRepeatMode(GL_TEXTURE_WRAP_T, gp->tsp.ClampV, gp->tsp.FlipV);

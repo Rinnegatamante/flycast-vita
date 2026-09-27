@@ -676,6 +676,9 @@ public:
 	void ComputeHash();
 	void Update();
 	virtual void UploadToGPU(int width, int height, const u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded = false) = 0;
+#ifdef __vita__
+	virtual bool TryReuseMvc2Pal4() { return false; }
+#endif
 	virtual bool Force32BitTexture(TextureType type) const { return false; }
 	void CheckCustomTexture();
 	//true if : dirty or paletted texture and hashes don't match

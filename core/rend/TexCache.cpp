@@ -12,6 +12,10 @@
 #include <algorithm>
 #include <mutex>
 #include <xxhash.h>
+#ifdef VITA_MVC2_TEXTURE_SURVEY
+#include <list>
+#include <unordered_map>
+#endif
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -712,6 +716,84 @@ void BaseTextureCacheData::Update()
 			return;
 		}
 	}
+#ifdef __vita__
+	if (TryReuseMvc2Pal4())
+	{
+		height = original_h;
+		protectVRam();
+		return;
+	}
+#endif
+#if defined(__vita__) && defined(VITA_MVC2_TEXTURE_SURVEY)
+	if (settings.content.gameId == "T1212N" && tcw.PixelFmt == PixelPal4
+			&& sa < VRAM_SIZE && size <= VRAM_SIZE - sa)
+	{
+		struct SurveyEntry { u32 address; u32 sourceBytes; u32 gpuBytes; };
+		struct SurveyLru {
+			explicit SurveyLru(size_t cap) : capacity(cap) { slots.reserve(cap); }
+			void observe(u64 key) {
+				auto it = slots.find(key);
+				if (it != slots.end()) {
+					hits++;
+					order.splice(order.begin(), order, it->second);
+				} else {
+					misses++;
+					if (slots.size() == capacity) {
+						slots.erase(order.back());
+						order.pop_back();
+					}
+					order.push_front(key);
+					slots.emplace(key, order.begin());
+				}
+			}
+			size_t capacity;
+			std::list<u64> order;
+			std::unordered_map<u64, std::list<u64>::iterator> slots;
+			u64 hits = 0, misses = 0;
+		};
+		static std::unordered_map<u64, SurveyEntry> seen;
+		static SurveyLru lru4(4096), lru16(16384);
+		static u64 updates = 0, gpuPaletteUpdates = 0, repeats = 0;
+		static u64 crossAddress = 0, sourceBytes = 0, gpuBytes = 0;
+		static u64 uploadBytes = 0, saturated = 0;
+		const u32 outputBpp = gpuPalette ? 1 : (tex_type == TextureType::_8888 ? 4 : 2);
+		const u32 outputBytes = width * height * outputBpp;
+		const u64 rawHash = XXH64(&vram[sa], size, 7);
+		const u64 metadata[3] = {
+			(u64)width << 32 | height,
+			// For Pal4, ScanOrder/StrideSel overlap PalSelect and are not
+			// independent layout properties. GPU palette selection is in the shader.
+			(u64)tcw.MipMapped << 24 | (u64)tcw.VQ_Comp << 16 |
+				(u64)outputBpp << 8 | (u64)gpuPalette,
+			gpuPalette ? 0 : (u64)palette_hash << 32 | (PAL_RAM_CTRL & 3)
+		};
+		const u64 key = XXH64(metadata, sizeof(metadata), rawHash);
+		lru4.observe(key);
+		lru16.observe(key);
+		updates++;
+		gpuPaletteUpdates += gpuPalette;
+		uploadBytes += outputBytes;
+		auto it = seen.find(key);
+		if (it != seen.end())
+		{
+			repeats++;
+			crossAddress += it->second.address != sa_tex;
+		}
+		else if (seen.size() < 16384)
+		{
+			seen.emplace(key, SurveyEntry{sa_tex, size, outputBytes});
+			sourceBytes += size;
+			gpuBytes += outputBytes;
+		}
+		else
+			saturated++;
+		if ((updates & 8191) == 0)
+			NOTICE_LOG(RENDERER,
+				"MVC2 Pal4 content survey: updates=%llu gpu_pal=%llu unique=%u repeats=%llu cross_addr=%llu src_bytes=%llu gpu_bytes=%llu upload_bytes=%llu saturated=%llu lru4_hits=%llu lru16_hits=%llu",
+				updates, gpuPaletteUpdates, (unsigned)seen.size(), repeats, crossAddress,
+				sourceBytes, gpuBytes, uploadBytes, saturated, lru4.hits, lru16.hits);
+	}
+#endif
 #ifdef __vita__
 	const u8 *mvc2VqSource = mvc2EffectVqFallback(tcw, width, height, sa_tex);
 	if (mvc2VqSource != nullptr)

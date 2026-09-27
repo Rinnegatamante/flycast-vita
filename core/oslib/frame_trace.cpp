@@ -105,6 +105,30 @@ void poll()
     exported = true;
     const uint32_t counts[] = {streams[Emu].published.load(std::memory_order_acquire),
                               streams[Render].published.load(std::memory_order_acquire)};
+    constexpr size_t kindCount = sizeof(names) / sizeof(names[0]);
+    uint32_t kindCounts[2][kindCount] = {};
+    uint64_t kindDurations[2][kindCount] = {};
+    for (unsigned lane = 0; lane < 2; ++lane)
+        for (uint32_t i = 0; i < counts[lane]; ++i) {
+            const Event& event = streams[lane].events[i];
+            if (event.kind < kindCount) {
+                kindCounts[lane][event.kind]++;
+                kindDurations[lane][event.kind] += event.end - event.start;
+            }
+        }
+    NOTICE_LOG(COMMON, "frame-trace: summary emu=%u render=%u overflow=%u/%u wrong_lane=%u",
+        counts[Emu], counts[Render], streams[Emu].overflow.load(),
+        streams[Render].overflow.load(), wrongLane.load());
+    for (unsigned lane = 0; lane < 2; ++lane)
+        for (size_t kind = 0; kind < kindCount; ++kind)
+            if (kindCounts[lane][kind] != 0)
+                NOTICE_LOG(COMMON, "frame-trace: lane=%s kind=%s count=%u total_us=%llu",
+                    lane ? "render" : "emu", names[kind], kindCounts[lane][kind],
+                    (unsigned long long)kindDurations[lane][kind]);
+    // The CSV can take many seconds to serialize on Vita. Summary-only mode
+    // preserves a complete, bounded capture when another app may take over.
+    if (cfgLoadBool("perf", "FrameTraceSummaryOnly", false))
+        return;
     const std::string path = get_writable_data_path("mvc2_frame_trace.csv");
     FILE* file = fopen(path.c_str(), "w");
     if (!file) {

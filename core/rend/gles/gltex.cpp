@@ -1,17 +1,250 @@
 #include "glcache.h"
 #include "gles.h"
+#include "cfg/cfg.h"
 #include "hw/pvr/pvr_mem.h"
 #include "rend/TexCache.h"
 
 #include <cstdio>
 #include <cstdlib>
+#ifdef __vita__
+#include <array>
+#include <cstring>
+#include <list>
+#include <unordered_map>
+#include <xxhash.h>
+#endif
 
 GlTextureCache TexCache;
 
 static void readAsyncPixelBuffer(u32 addr);
 
+#ifdef __vita__
+struct Mvc2ResidentPal4
+{
+	GLuint texID = 0;
+	u64 key = 0;
+	u32 sampler = 0;
+	u32 references = 0;
+	std::array<u8, 512> source{};
+};
+
+namespace {
+class Mvc2ResidentPal4Cache
+{
+public:
+	static constexpr size_t Capacity = 4096; // 4 MiB of 32x32 GPU palette indices
+
+	bool enabled()
+	{
+		if (!optionLoaded && settings.content.gameId == "T1212N")
+		{
+			optionEnabled = cfgLoadBool("perf", "Mvc2ResidentPal4Cache", false);
+			optionLoaded = true;
+			NOTICE_LOG(RENDERER, "MVC2 resident Pal4 cache enabled=%d capacity=%u",
+				optionEnabled, (unsigned)Capacity);
+		}
+		return optionEnabled;
+	}
+
+	bool eligible(const TextureCacheData& texture) const
+	{
+		return settings.content.gameId == "T1212N"
+			&& texture.tcw.PixelFmt == PixelPal4 && texture.gpuPalette
+			&& texture.tex_type == TextureType::_8
+			&& texture.width == 32 && texture.height == 32 && texture.size == 512
+			&& !texture.tcw.VQ_Comp && !texture.tcw.MipMapped
+			&& texture.sa < VRAM_SIZE && texture.size <= VRAM_SIZE - texture.sa
+			&& config::TextureUpscale == 1 && !config::CustomTextures
+			&& !config::DumpTextures;
+	}
+
+	static u32 sampler(const TextureCacheData& texture)
+	{
+		// PalSelect overlays TCW.ScanOrder/StrideSel; neither is a layout bit here.
+		return (texture.tsp.full >> 13) & 0x3f;
+	}
+
+	static u64 key(const TextureCacheData& texture, u32 samplerState)
+	{
+		return XXH64(&vram[texture.sa], 512, 0x4d564332ULL ^ samplerState);
+	}
+
+	Mvc2ResidentPal4 *find(const TextureCacheData& texture, u64 contentKey, u32 samplerState)
+	{
+		lookups++;
+		auto found = byKey.find(contentKey);
+		if (found == byKey.end())
+			return nullptr;
+		auto entry = found->second;
+		if (entry->sampler != samplerState
+				|| std::memcmp(entry->source.data(), &vram[texture.sa], 512) != 0)
+		{
+			collisions++;
+			return nullptr;
+		}
+		entry->references++;
+		entries.splice(entries.begin(), entries, entry);
+		hits++;
+		if ((lookups & 16383) == 0)
+			logStats();
+		return &*entry;
+	}
+
+	Mvc2ResidentPal4 *upload(const TextureCacheData& texture, u64 contentKey,
+		u32 samplerState, const u8 *decoded, GLenum format)
+	{
+		// A 64-bit collision must fall back to the per-entry texture, not alias
+		// different source bytes to the same GPU object.
+		if (byKey.find(contentKey) != byKey.end())
+		{
+			fallbacks++;
+			return nullptr;
+		}
+		std::list<Mvc2ResidentPal4>::iterator entry;
+		if (entries.size() < Capacity)
+		{
+			entries.emplace_front();
+			entry = entries.begin();
+			entry->texID = glcache.GenTexture();
+		}
+		else
+		{
+			auto old = entries.rbegin();
+			while (old != entries.rend() && old->references != 0)
+				++old;
+			if (old == entries.rend())
+			{
+				fallbacks++;
+				return nullptr;
+			}
+			entry = std::prev(old.base());
+			byKey.erase(entry->key);
+			entries.splice(entries.begin(), entries, entry);
+			entry = entries.begin();
+			evictions++;
+		}
+		entry->key = contentKey;
+		entry->sampler = samplerState;
+		entry->references = 1;
+		std::memcpy(entry->source.data(), &vram[texture.sa], 512);
+		glcache.BindTexture(GL_TEXTURE_2D, entry->texID);
+		glTexImage2D(GL_TEXTURE_2D, 0, format, 32, 32, 0,
+			format, GL_UNSIGNED_BYTE, decoded);
+		byKey.emplace(contentKey, entry);
+		uploads++;
+		return &*entry;
+	}
+
+	void release(Mvc2ResidentPal4 *entry)
+	{
+		if (entry != nullptr)
+		{
+			verify(entry->references != 0);
+			entry->references--;
+		}
+	}
+
+	void clear()
+	{
+		std::vector<GLuint> ids;
+		ids.reserve(entries.size());
+		for (const auto& entry : entries)
+		{
+			verify(entry.references == 0);
+			ids.push_back(entry.texID);
+		}
+		byKey.clear();
+		entries.clear();
+		if (!ids.empty())
+			glcache.DeleteTextures((GLsizei)ids.size(), ids.data());
+	}
+
+private:
+	void logStats() const
+	{
+		NOTICE_LOG(RENDERER,
+			"MVC2 resident Pal4 cache: lookups=%llu hits=%llu uploads=%llu evictions=%llu fallbacks=%llu collisions=%llu entries=%u",
+			lookups, hits, uploads, evictions, fallbacks, collisions, (unsigned)entries.size());
+	}
+	bool optionLoaded = false;
+	bool optionEnabled = false;
+	std::list<Mvc2ResidentPal4> entries;
+	std::unordered_map<u64, std::list<Mvc2ResidentPal4>::iterator> byKey;
+	u64 lookups = 0, hits = 0, uploads = 0, evictions = 0;
+	u64 fallbacks = 0, collisions = 0;
+};
+
+Mvc2ResidentPal4Cache residentPal4Cache;
+} // namespace
+
+bool TextureCacheData::TryReuseMvc2Pal4()
+{
+	pendingPal4Valid = false;
+	if (!residentPal4Cache.enabled() || !residentPal4Cache.eligible(*this))
+		return false;
+	const u32 samplerState = residentPal4Cache.sampler(*this);
+	const u64 contentKey = residentPal4Cache.key(*this, samplerState);
+	Mvc2ResidentPal4 *found = residentPal4Cache.find(*this, contentKey, samplerState);
+	if (found == nullptr)
+	{
+		pendingPal4Key = contentKey;
+		pendingPal4Sampler = samplerState;
+		pendingPal4Valid = true;
+		return false;
+	}
+	residentPal4Cache.release(residentPal4);
+	residentPal4 = found;
+	return true;
+}
+#endif
+
+GLuint TextureCacheData::boundTextureId() const
+{
+#ifdef __vita__
+	if (residentPal4 != nullptr)
+		return residentPal4->texID;
+#endif
+	return texID;
+}
+
+void GlTextureCache::Clear()
+{
+	BaseTextureCache<TextureCacheData>::Clear();
+#ifdef __vita__
+	residentPal4Cache.clear();
+#endif
+}
+
 void TextureCacheData::UploadToGPU(int width, int height, const u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded)
 {
+#ifdef __vita__
+	if (residentPal4Cache.enabled() && residentPal4Cache.eligible(*this)
+			&& !mipmapped && !mipmapsIncluded)
+	{
+		const u32 samplerState = residentPal4Cache.sampler(*this);
+		const u64 contentKey = residentPal4Cache.key(*this, samplerState);
+		const bool sourceStable = pendingPal4Valid
+			&& pendingPal4Sampler == samplerState && pendingPal4Key == contentKey;
+		pendingPal4Valid = false;
+		residentPal4Cache.release(residentPal4);
+		residentPal4 = sourceStable ? residentPal4Cache.upload(*this, contentKey,
+			samplerState, temp_tex_buffer, gl.single_channel_format) : nullptr;
+		if (residentPal4 != nullptr)
+		{
+			glCheck();
+			return;
+		}
+	}
+	else
+	{
+		pendingPal4Valid = false;
+		if (residentPal4 != nullptr)
+		{
+			residentPal4Cache.release(residentPal4);
+			residentPal4 = nullptr;
+		}
+	}
+#endif
 	//upload to OpenGL !
 	glcache.BindTexture(GL_TEXTURE_2D, texID);
 	GLuint comps = tex_type == TextureType::_8 ? gl.single_channel_format : GL_RGBA;
@@ -113,6 +346,11 @@ bool TextureCacheData::Delete()
 {
 	if (!BaseTextureCacheData::Delete())
 		return false;
+
+#ifdef __vita__
+	residentPal4Cache.release(residentPal4);
+	residentPal4 = nullptr;
+#endif
 
 	if (texID)
 		glcache.DeleteTextures(1, &texID);

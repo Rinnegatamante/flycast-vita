@@ -341,24 +341,43 @@ extern struct ShaderUniforms_t
 
 } ShaderUniforms;
 
+#ifdef __vita__
+struct Mvc2ResidentPal4;
+#endif
+
 class TextureCacheData final : public BaseTextureCacheData
 {
 public:
 	TextureCacheData(TSP tsp, TCW tcw) : BaseTextureCacheData(tsp, tcw), texID(glcache.GenTexture()) {
 	}
-	TextureCacheData(TextureCacheData&& other) : BaseTextureCacheData(std::move(other)) {
+	TextureCacheData(TextureCacheData&& other) : BaseTextureCacheData(std::move(other)), texID(0) {
 		std::swap(texID, other.texID);
+#ifdef __vita__
+		std::swap(residentPal4, other.residentPal4);
+		std::swap(pendingPal4Key, other.pendingPal4Key);
+		std::swap(pendingPal4Sampler, other.pendingPal4Sampler);
+		std::swap(pendingPal4Valid, other.pendingPal4Valid);
+#endif
 	}
 
 	GLuint texID;   //gl texture
+	GLuint boundTextureId() const;
 	std::string GetId() override { return std::to_string(texID); }
 	void UploadToGPU(int width, int height, const u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded = false) override;
 	bool Delete() override;
+#ifdef __vita__
+	bool TryReuseMvc2Pal4() override;
+	Mvc2ResidentPal4 *residentPal4 = nullptr;
+	u64 pendingPal4Key = 0;
+	u32 pendingPal4Sampler = 0;
+	bool pendingPal4Valid = false;
+#endif
 };
 
 class GlTextureCache final : public BaseTextureCache<TextureCacheData>
 {
 public:
+	void Clear();
 	void Cleanup()
 	{
 		if (!texturesToDelete.empty())
