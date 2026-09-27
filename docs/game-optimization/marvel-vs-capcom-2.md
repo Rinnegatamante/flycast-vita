@@ -2268,12 +2268,20 @@ establish transition or whole-game correctness. Evidence is under
 
 A 20-second detailed frame-trace attempt was inconclusive: CSV export was
 still in progress when the test app stopped, so the saved file is truncated.
-The off run was interrupted when RE4 resumed on the shared DevKit. The trace
-build now supports `[perf] FrameTraceSummaryOnly = yes`, which logs complete
-per-kind counts and wall durations before any CSV write; use that for the next
-short A/B when the DevKit is free. Do not treat the truncated CSV as a valid
-profile. After these runs, the DevKit's original config and slot-7 state were
-restored and read back with matching SHA256.
+The off run was interrupted when RE4 resumed on the shared DevKit. Do not
+treat either CSV as a valid profile. The trace build therefore gained
+`[perf] FrameTraceSummaryOnly = yes`, which logs complete per-kind counts,
+wall durations and guest-frame interval percentiles before any CSV write.
+In a subsequent same-SELF 12-second summary pair, the cache reduced texture
+scope time from 2,549 to 2,231 ms and renderer `process` scope time from
+6,063 to 5,760 ms. Guest-frame median/p95 changed from 23.968/41.358 ms off
+to 23.474/41.021 ms on. These scope totals are wall time nested within
+renderer processing, not independent CPU/GPU costs, and the initial boot
+portion is included. Logs are under
+`build-vita-cache-resident-trace/devkit-logs/mvc2-resident-summary-{off,on}/`.
+The cache measurably helps texture handling, but other costs dominate the
+remaining roughly 20% speed deficit. After all runs, the DevKit's original
+config and slot-7 state were restored and read back with matching SHA256.
 
 The optional `VITA_MVC2_STANDALONE` menu-free build boots the fixed disc path
 and removes approximately 1.35 MiB of loaded text/data versus the full UI

@@ -125,6 +125,29 @@ void poll()
                 NOTICE_LOG(COMMON, "frame-trace: lane=%s kind=%s count=%u total_us=%llu",
                     lane ? "render" : "emu", names[kind], kindCounts[lane][kind],
                     (unsigned long long)kindDurations[lane][kind]);
+    std::vector<uint64_t> guestFrameIntervals;
+    uint64_t previousGuestFrame = 0;
+    const uint64_t captureUs = deadline - origin;
+    for (uint32_t i = 0; i < counts[Emu]; ++i) {
+        const Event& event = streams[Emu].events[i];
+        if (event.kind != GuestFrame || event.start < 1000000
+                || event.start >= captureUs - 1000000)
+            continue;
+        if (previousGuestFrame != 0 && event.start >= previousGuestFrame)
+            guestFrameIntervals.push_back(event.start - previousGuestFrame);
+        previousGuestFrame = event.start;
+    }
+    if (!guestFrameIntervals.empty()) {
+        std::sort(guestFrameIntervals.begin(), guestFrameIntervals.end());
+        const size_t median = guestFrameIntervals.size() / 2;
+        const size_t p95 = (guestFrameIntervals.size() * 95 + 99) / 100 - 1;
+        NOTICE_LOG(COMMON,
+            "frame-trace: guest-frame-intervals count=%u median_us=%llu p95_us=%llu max_us=%llu",
+            (unsigned)guestFrameIntervals.size(),
+            (unsigned long long)guestFrameIntervals[median],
+            (unsigned long long)guestFrameIntervals[p95],
+            (unsigned long long)guestFrameIntervals.back());
+    }
     // The CSV can take many seconds to serialize on Vita. Summary-only mode
     // preserves a complete, bounded capture when another app may take over.
     if (cfgLoadBool("perf", "FrameTraceSummaryOnly", false))
