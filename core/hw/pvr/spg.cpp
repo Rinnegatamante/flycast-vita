@@ -10,6 +10,7 @@
 #include "serialize.h"
 #ifdef VITA
 #include "cfg/cfg.h"
+#include "Renderer_if.h"
 #endif
 
 //SPG emulation; Scanline/Raster beam registers & interrupts
@@ -38,6 +39,39 @@ u32 fskip;
 static u32 lightgun_line = 0xffff;
 static u32 lightgun_hpos;
 static bool maple_int_pending;
+
+#ifdef VITA
+static void mvc2SpeedSample(double now_us)
+{
+	static const bool enabled = cfgLoadBool("perf", "Mvc2SpeedLog", false);
+	if (!enabled || settings.content.gameId != "T1212N")
+		return;
+	static u64 last_guest = 0;
+	static double last_host = 0;
+	static u32 last_render = 0;
+	static u32 vblanks = 0;
+	const u64 guest = sh4_sched_now64();
+	if (last_host == 0 || guest <= last_guest || guest - last_guest > 10ULL * SH4_MAIN_CLOCK)
+	{
+		last_guest = guest;
+		last_host = now_us;
+		last_render = FrameCount;
+		vblanks = 0;
+		return;
+	}
+	if (++vblanks < 50)
+		return;
+	const double wall_s = (now_us - last_host) / 1000000.0;
+	const double guest_s = (double)(guest - last_guest) / SH4_MAIN_CLOCK;
+	NOTICE_LOG(PVR, "mvc2-speed: guest_cycles=%llu guest_s=%.4f wall_s=%.4f ratio=%.4f rendered=%u vblanks=%u",
+		(unsigned long long)guest, guest_s, wall_s, guest_s / wall_s,
+		FrameCount - last_render, vblanks);
+	last_guest = guest;
+	last_host = now_us;
+	last_render = FrameCount;
+	vblanks = 0;
+}
+#endif
 
 void CalculateSync()
 {
@@ -134,6 +168,9 @@ int spg_line_sched(int tag, int cycl, int jit)
 			rend_vblank();
 
 			double now = os_GetSeconds() * 1000000.0;
+#ifdef VITA
+			mvc2SpeedSample(now);
+#endif
 			cpu_time_idx = (cpu_time_idx + 1) % cpu_cycles.size();
 			if (cpu_cycles[cpu_time_idx] != 0)
 			{

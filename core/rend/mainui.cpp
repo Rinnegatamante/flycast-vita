@@ -28,6 +28,7 @@
 #include "emulator.h"
 #include "hw/sh4/dyna/mvc2_native_cache.h"
 #include "imgui_driver.h"
+#include "log/LogManager.h"
 #ifdef __vita__
 #include <psp2/kernel/processmgr.h>
 #endif
@@ -99,6 +100,25 @@ void mainui_loop()
 {
 	mainui_enabled = true;
 	mainui_init();
+#ifdef VITA_MVC2_STANDALONE
+	// This build accepts one known disc revision. The path is deliberately not
+	// taken from emu.cfg or the content browser.
+	static constexpr char mvc2Disc[] =
+		"ux0:data/marvel/Marvel vs. Capcom 2 v1.001 (2000)(Capcom)(NTSC)(US)[!].gdi";
+	try {
+		emu.loadGame(mvc2Disc);
+		emu.start();
+	} catch (const FlycastException& e) {
+		ERROR_LOG(BOOT, "MVC2 standalone boot failed: %s", e.what());
+		mainui_enabled = false;
+	}
+	while (mainui_enabled)
+	{
+		const bool rendered = mainui_rend_frame();
+		imguiDriver->present();
+		razorCaptureTick(rendered);
+	}
+#else
 	RenderType currentRenderer = config::RendererType;
 
 	while (mainui_enabled)
@@ -119,6 +139,7 @@ void mainui_loop()
 			currentRenderer = config::RendererType;
 		}
 	}
+#endif
 
 	mainui_term();
 }

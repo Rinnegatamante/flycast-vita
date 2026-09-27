@@ -55,7 +55,9 @@ int flycast_init(int argc, char* argv[])
 	os_SetupInput();
 
 	debugger::init();
+#ifndef VITA_MVC2_STANDALONE
 	lua::init();
+#endif
 	razorCaptureInit();
 
 	return 0;
@@ -82,7 +84,9 @@ void flycast_term()
 {
 	razorCaptureTerm();
 	gui_cancel_load();
+#ifndef VITA_MVC2_STANDALONE
 	lua::term();
+#endif
 	emu.term();
 	gui_term();
 	os_TermInput();

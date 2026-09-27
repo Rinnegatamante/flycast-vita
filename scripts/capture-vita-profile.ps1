@@ -10,6 +10,8 @@ param(
     [int]$ListenTimeoutMs = 180000,
     [ValidateRange(1, 1000)]
     [int]$Top = 50,
+    [ValidateSet('min', 'normal', 'max')]
+    [string]$BufferSize = 'normal',
     [switch]$NoTargetTrigger
 )
 
@@ -63,6 +65,7 @@ $captureArgs = @(
     'cpu-trace',
     $capture,
     "--length=$LengthMs",
+    "--buffer-size=$BufferSize",
     "--mode=$Mode",
     # Occam matches this converted ELF against the module loaded from the SELF.
     # The pre-conversion ELF remains beside it for fixed-address analysis.

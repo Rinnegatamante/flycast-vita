@@ -57,10 +57,19 @@ void abortHandler(KuKernelAbortContext *abortContext)
 		return;
 	}
 #endif
+	if (abortContext->FAR == 0)
+	{
+		ERROR_LOG(COMMON, "Unhandled null memory fault at PC %p", (void *)abortContext->pc);
+		if (nextHandler != nullptr)
+			nextHandler(abortContext);
+		else
+			die("null memory fault");
+		return;
+	}
 	if (!threadInFault)
 	{
 		threadInFault = true;
-		ERROR_LOG(COMMON, "Memory remap race condition detected for address %p (0x%08X) Waiting 10 ms...", (void *)abortContext->FAR, *(uint32_t *)abortContext->FAR);
+		ERROR_LOG(COMMON, "Memory remap race condition detected for address %p. Waiting 10 ms...", (void *)abortContext->FAR);
 		sceKernelDelayThread(10 * 1000);
 		threadInFault = false;
 

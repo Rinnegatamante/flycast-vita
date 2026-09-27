@@ -26,6 +26,8 @@ option(VITA_VELF_SYMBOLS "Vita: keep section headers and .symtab in the .velf" O
 option(VITA_LTO "Vita: enable link-time optimization" OFF)
 option(VITA_JIT_RUN_PROFILE "Vita: instrument SH4 JIT block executions" OFF)
 option(VITA_FRAME_TRACE "Vita: bounded MVC2 frame-stutter diagnostic" OFF)
+option(VITA_MVC2_STANDALONE "Vita: build the fixed-content MVC2 app without the Flycast menu" OFF)
+option(VITA_MEM_TRACE "Vita: trace sceKernelAllocMemBlock requests during startup" OFF)
 set(VITA_VITAGL_ROOT "" CACHE PATH "Private vitaGL prefix containing include/vitaGL.h and lib/libvitaGL.a")
 set(VITA_JIT_PROFILE_WARMUP_SECONDS 15 CACHE STRING "Vita: seconds before resetting JIT run counters")
 set(VITA_JIT_PROFILE_DURATION_SECONDS 15 CACHE STRING "Vita: seconds of JIT run-counter sampling")
@@ -131,11 +133,19 @@ if(VITA)
 	add_executable(${PROJECT_NAME} core/emulator.cpp)
 	target_link_options(${PROJECT_NAME} PRIVATE
 		"-Wl,--build-id=sha1,-T,${CMAKE_CURRENT_SOURCE_DIR}/cmake/vita-native-build-id.ld")
+	if(VITA_MEM_TRACE)
+		target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=sceKernelAllocMemBlock")
+	endif()
 	set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS
 		"${CMAKE_CURRENT_SOURCE_DIR}/cmake/vita-native-build-id.ld")
 	if(VITA_FRAME_TRACE)
 		target_sources(${PROJECT_NAME} PRIVATE core/oslib/frame_trace.cpp)
 		target_compile_definitions(${PROJECT_NAME} PRIVATE VITA_FRAME_TRACE)
+	endif()
+	if(VITA_MVC2_STANDALONE)
+		target_compile_definitions(${PROJECT_NAME} PRIVATE VITA_MVC2_STANDALONE)
+		set(VITA_APP_NAME "Marvel vs. Capcom 2")
+		message(STATUS "Vita: MVC2 standalone menu-free build")
 	endif()
 	if(NOT VITA_VITAGL_ROOT)
 		message(FATAL_ERROR
@@ -1244,16 +1254,20 @@ if(NOT LIBRETRO)
 	target_sources(${PROJECT_NAME} PRIVATE
 			core/rend/game_scanner.h
 			core/rend/imgui_driver.h
-			core/rend/gui.cpp
 			core/rend/gui.h
+			core/rend/mainui.cpp
+			core/rend/mainui.h)
+	if(VITA AND VITA_MVC2_STANDALONE)
+		target_sources(${PROJECT_NAME} PRIVATE core/rend/gui_mvc2_standalone.cpp)
+	else()
+		target_sources(${PROJECT_NAME} PRIVATE
+			core/rend/gui.cpp
 			core/rend/gui_android.cpp
 			core/rend/gui_android.h
 			core/rend/gui_chat.h
 			core/rend/gui_cheats.cpp
 			core/rend/gui_util.cpp
 			core/rend/gui_util.h
-			core/rend/mainui.cpp
-			core/rend/mainui.h
 			core/rend/boxart/boxart.cpp
 			core/rend/boxart/boxart.h
 			core/rend/boxart/gamesdb.cpp
@@ -1262,6 +1276,7 @@ if(NOT LIBRETRO)
 			core/rend/boxart/http_client.h
 			core/rend/boxart/scraper.cpp
 			core/rend/boxart/scraper.h)
+	endif()
 endif()
 
 if(USE_VULKAN)

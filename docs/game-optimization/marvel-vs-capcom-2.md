@@ -2175,6 +2175,73 @@ was not re-run on the device. The DevKit's prior `emu.cfg` was restored and
 verified byte-for-byte by SHA256; only the two temporary raw clip files were
 removed from its storage after the host copies had been retained.
 
+### Slot-7 low-FPS renderer and texture investigation, 2026-09-27
+
+The tester's second slot-7 state and deterministic dash/assist input reproduce
+sub-full-speed gameplay. The exact US v1.001 disc remains fixed. A startup
+failure during this work was a roughly 65 MiB `USER_RW` SH4 table commit in
+`vita_vmem.cpp`, not a failed phycont request. Raising vitaGL's phycont
+threshold to 32 MiB avoided an earlier approximately 26 MiB phycont pool
+allocation and allowed that `USER_RW` commit. The 246 MiB newlib heap was not
+reduced without evidence that doing so was necessary. The optional
+`VITA_MEM_TRACE` link wrapper records future allocation order.
+
+The private vitaGL revision `464876a79cdd00650bb0eb9629b85d81f9908fd8`
+was built with vertex-layout caching off and on, including a local lazy
+shader-cache-directory fix in both prefixes. On the same 35-second workload,
+the mean guest-speed ratios were 0.8312 and 0.8300 respectively: no measurable
+layout-cache benefit. The upstream vitaGL checkout was not modified.
+
+A valid 20-second frame trace is at
+`build-vita-cache-normal/devkit-logs/mvc2-vgl464876-frame-trace20/20260927-161708/mvc2_frame_trace.csv`.
+It recorded 656 frames without overflow. Across 612 interior intervals, the
+median was 23.768 ms and p95 was 38.281 ms against a 20 ms 50-Hz budget.
+`process` took about 18.8 ms per observed frame, with 5,080 ms total in
+texture updates and 2,050 ms in draw scopes. JIT compilation totalled 555 ms;
+only 40 of 118 intervals at or above 30 ms overlapped compilation. For example,
+frame 196 spent 39.7 ms in renderer processing and 16.4 ms in 322 texture
+updates with no compilation. About 97.7% of measured texture-update time was
+Pal4. These numbers implicate texture handling in this scene, not necessarily
+every scene or every individual hitch.
+
+Reusing GL storage through `glTexSubImage2D` was tested on one SELF with two
+off/on pairs. Off yielded mean ratios 0.8344 and 0.8226; on yielded 0.8043
+and 0.8030. The candidate was reverted. The local vitaGL implementation copies
+recently used texture storage before sub-image modification, explaining a
+plausible extra cost; that explanation is not a measured allocation breakdown.
+
+An opt-in raw-VRAM hash skip then avoided upload when a twiddled Pal4 texture
+and its relevant palette were unchanged in the same cache entry. In one
+35-second run, 126,976 Pal4 updates included 62,202 compatible twiddled
+updates, of which 7,491 (12.0%) reused the previous texels. The same-SELF,
+same-state 16-guest-second comparison yielded 0.80128 with the skip and
+0.80548 without it (799 rendered guest frames in both). It was reverted;
+neither result is full speed. Diagnostic logs are under
+`build-vita-cache-normal/devkit-logs/mvc2-pal4-hash-survey-final/20260927-164646/`
+and `build-vita-cache-normal/devkit-logs/mvc2-pal4-hash-off-samebin/20260927-164753/`.
+
+`vglGetGxmTexture` returns a pointer to vitaGL's current internal GXM texture
+descriptor. Swapping only its data pointer is not an owned texture cache:
+vitaGL also tracks `tex->data`, frame lifetime and frees. A safe resident
+sprite cache would retain separate GL texture objects or managed GPU allocations,
+keyed by decoded contents, dimensions/format and (for CPU palettes) palette;
+it must bound memory and preserve buffers while the GPU can still read them.
+The measured same-entry reuse is too low to justify the simple hash skip. The
+next evidence gate is a bounded survey of unique texture contents/bytes and
+cross-address reuse over this and varied fights, before allocating an entire
+fighter set. Keeping only raw 4-bpp source in CPU RAM would reduce disc/VRAM
+work but still require decoding and GPU upload, so it alone would not remove
+the measured renderer cost.
+
+The optional `VITA_MVC2_STANDALONE` menu-free build boots the fixed disc path
+and removes approximately 1.35 MiB of loaded text/data versus the full UI
+build in one comparison. Its observed mean ratio was about 0.829, so it is a
+memory reduction, not a speed fix. A Razor CPU capture attempted during this
+work encountered a null-address fault and produced no usable profile; the
+bounded frame trace above is the valid diagnostic. After testing, the DevKit's
+prior `emu.cfg` and slot-7 state were restored and read back with matching
+SHA256. Audio and longer fight-transition correctness remain unverified.
+
 ## Next evidence gate
 
 1. Cold-boot the 219,950-record beta to check memory, then run varied matches

@@ -24,6 +24,17 @@ int _newlib_heap_size_user = 246 * 1024 * 1024;
 bool is_standalone = false;
 
 extern "C" {
+SceUID __real_sceKernelAllocMemBlock(const char *name, SceKernelMemBlockType type,
+	SceSize size, SceKernelAllocMemBlockOpt *opt);
+SceUID __wrap_sceKernelAllocMemBlock(const char *name, SceKernelMemBlockType type,
+	SceSize size, SceKernelAllocMemBlockOpt *opt) {
+	sceClibPrintf("MEMTRACE alloc name=%s type=0x%x size=0x%x\n",
+		name == nullptr ? "(null)" : name, (unsigned)type, (unsigned)size);
+	SceUID id = __real_sceKernelAllocMemBlock(name, type, size, opt);
+	sceClibPrintf("MEMTRACE result name=%s uid=0x%x\n",
+		name == nullptr ? "(null)" : name, (unsigned)id);
+	return id;
+}
 void *__wrap_calloc(uint32_t nmember, uint32_t size) { return vglCalloc(nmember, size); }
 void __wrap_free(void *addr) { vglFree(addr); };
 void *__wrap_malloc(uint32_t size) { return vglMalloc(size); };
@@ -469,7 +480,11 @@ int main(int argc, char* argv[])
 	vglUseTripleBuffering(GL_FALSE);
 	vglSetParamBufferSize(6 * 1024 * 1024);
 	vglUseCachedMem(GL_TRUE);
-	vglInitWithCustomThreshold(0, 960, 544, 256 * 1024 * 1024, 0, 0, 0, SCE_GXM_MULTISAMPLE_4X);
+	// Leave the phycont pool unallocated by vitaGL. In the measured boot its
+	// allocation preceded a failed USER_RW SH4 table commit; removing the pool
+	// allowed that commit to succeed, but the failing request is USER_RW.
+	vglInitWithCustomThreshold(0, 960, 544, 256 * 1024 * 1024, 0,
+		32 * 1024 * 1024, 0, SCE_GXM_MULTISAMPLE_4X);
 #endif
 
 #if defined(USE_SDL)

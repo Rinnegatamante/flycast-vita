@@ -5,6 +5,9 @@
 #include "cfg/option.h"
 #include "stdclass.h"
 #include "serialize.h"
+#ifdef __vita__
+#include "hw/sh4/sh4_sched.h"
+#endif
 
 MapleInputState mapleInputState[4];
 extern bool maple_ddt_pending_reset;
@@ -16,6 +19,32 @@ static u8 GetBtFromSgn(s8 val)
 {
 	return val+128;
 }
+
+#ifdef __vita__
+// Reproducible diagnostic workload for the tester's dash/assist-heavy fight.
+// The phase is derived from emulated cycles, not wall time or host frame rate.
+static void mvc2StressInput(PlainJoystickState *pjs, u32 player)
+{
+	static const bool enabled = cfgLoadBool("perf", "Mvc2StressInput", false);
+	if (!enabled || player != 0 || settings.content.gameId != "T1212N")
+		return;
+	static bool announced = false;
+	if (!announced)
+	{
+		announced = true;
+		NOTICE_LOG(INPUT, "MVC2 deterministic dash/assist workload enabled");
+	}
+	const u32 phase = (sh4_sched_now64() / (SH4_MAIN_CLOCK / 50)) % 32;
+	pjs->kcode |= DC_DPAD_LEFT | DC_DPAD_RIGHT;
+	pjs->joy[PJAI_X1] = 0x80;
+	if (phase < 3 || (phase >= 5 && phase < 8))
+		pjs->kcode &= ~DC_DPAD_LEFT;
+	else if ((phase >= 16 && phase < 19) || (phase >= 21 && phase < 24))
+		pjs->kcode &= ~DC_DPAD_RIGHT;
+	pjs->trigger[PJTI_L] = (phase >= 2 && phase < 5) || (phase >= 18 && phase < 21) ? 0xff : 0;
+	pjs->trigger[PJTI_R] = (phase >= 10 && phase < 13) || (phase >= 26 && phase < 29) ? 0xff : 0;
+}
+#endif
 
 u32 awave_button_mapping[32] = {
 		AWAVE_BTN2_KEY,		// DC_BTN_C
@@ -78,6 +107,9 @@ void MapleConfigMap::GetInput(PlainJoystickState* pjs)
 		pjs->joy[PJAI_Y1] = GetBtFromSgn(inputState.fullAxes[PJAI_Y1]);
 		pjs->trigger[PJTI_R] = inputState.halfAxes[PJTI_R];
 		pjs->trigger[PJTI_L] = inputState.halfAxes[PJTI_L];
+#ifdef __vita__
+		mvc2StressInput(pjs, playerNum());
+#endif
 	}
 	else if (settings.platform.isAtomiswave())
 	{

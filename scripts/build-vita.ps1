@@ -8,6 +8,7 @@ param(
 
     [string]$BuildDir = 'build-vita',
     [string]$VitaGLDir = '..\vitaGL',
+    [string]$VitaGLPrefix = '',
     [string]$SDLDir = '..\SDL',
 
     [switch]$BuildVitaGL,
@@ -16,7 +17,9 @@ param(
     [switch]$Symbols,
     [switch]$LTO,
     [switch]$JitRunProfile,
-    [switch]$FrameTrace
+    [switch]$FrameTrace,
+    [switch]$Mvc2Standalone,
+    [switch]$MemTrace
 )
 
 Set-StrictMode -Version Latest
@@ -145,7 +148,14 @@ $vitaGLSeedPath = Resolve-InputPath -Path $VitaGLDir -BasePath $root
 $sdlPath = Resolve-InputPath -Path $SDLDir -BasePath $root
 $dependencyBuildRoot = Join-Path $root 'build-vita-deps'
 $vitaGLPath = Join-Path $dependencyBuildRoot 'src\vitaGL'
-$privatePrefix = Join-Path $dependencyBuildRoot 'prefix'
+$privatePrefix = if ($VitaGLPrefix) {
+    Resolve-InputPath -Path $VitaGLPrefix -BasePath $root
+} else {
+    Join-Path $dependencyBuildRoot 'prefix'
+}
+if (-not $privatePrefix.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "VitaGLPrefix must stay inside the repository: $privatePrefix"
+}
 $sdlBuildPath = Join-Path $dependencyBuildRoot 'SDL'
 $vitaGLLibrary = Join-Path $privatePrefix 'lib\libvitaGL.a'
 $vitaGLHeader = Join-Path $privatePrefix 'include\vitaGL.h'
@@ -316,6 +326,8 @@ $symbolOption = if ($Symbols) { 'ON' } else { 'OFF' }
 $ltoOption = if ($LTO) { 'ON' } else { 'OFF' }
 $jitRunProfileOption = if ($JitRunProfile) { 'ON' } else { 'OFF' }
 $frameTraceOption = if ($FrameTrace) { 'ON' } else { 'OFF' }
+$standaloneOption = if ($Mvc2Standalone) { 'ON' } else { 'OFF' }
+$memTraceOption = if ($MemTrace) { 'ON' } else { 'OFF' }
 Invoke-Native $cmake @(
     '-S', $root,
     '-B', $buildPath,
@@ -327,6 +339,8 @@ Invoke-Native $cmake @(
     "-DVITA_LTO=$ltoOption",
     "-DVITA_JIT_RUN_PROFILE=$jitRunProfileOption",
     "-DVITA_FRAME_TRACE=$frameTraceOption",
+    "-DVITA_MVC2_STANDALONE=$standaloneOption",
+    "-DVITA_MEM_TRACE=$memTraceOption",
     "-DVITA_VITAGL_ROOT=$privatePrefix",
     '-DCMAKE_POLICY_VERSION_MINIMUM=3.5'
 )
