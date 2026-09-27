@@ -2283,6 +2283,27 @@ The cache measurably helps texture handling, but other costs dominate the
 remaining roughly 20% speed deficit. After all runs, the DevKit's original
 config and slot-7 state were restored and read back with matching SHA256.
 
+### Heavy-state CPU sample and rejected fast lookup, 2026-09-28
+
+A host-driven 20-second PC-sample capture with the resident cache off and
+the same dash/assist state produced 13,881,889 application-range samples.
+The leading symbols were generated `SH4_TCB` (33.11%), Pal4 twiddled-index
+conversion (8.04%), TA polygon parsing (5.87%), `make_index` (4.98%),
+`__aeabi_uidivmod` (4.57%), ARM7 code (4.35%), `__udivsi3` (4.11%) and
+`BaseTextureCache::getTextureCacheData` (4.10%). Division call sites cannot
+be inferred from a PC-only sample. Exact ELF, VELF, RZR and XML are under
+`build-vita-cache-resident/devkit-logs/occam/mvc2-resident-heavy-20260928/`.
+
+An experimental 512-slot direct lookup in front of the texture cache map
+achieved 144,105 hits in 294,912 lookups (48.9%). Same-SELF off/on/on/off
+tests over 16 guest seconds and 799 renders each took 20.056/20.016 seconds
+off versus 20.423/20.135 seconds on. The mean was about 1.2% slower with
+the shortcut. It was removed, not retained despite the PC-sample rank.
+Evidence is under
+`build-vita-cache-resident/devkit-logs/mvc2-fastlookup-{off,on}-{a,b}/`.
+The DevKit config and slot-7 state were again restored and read back with
+matching SHA256. Further tests wait for the shared DevKit to be free of RE4.
+
 The optional `VITA_MVC2_STANDALONE` menu-free build boots the fixed disc path
 and removes approximately 1.35 MiB of loaded text/data versus the full UI
 build in one comparison. Its observed mean ratio was about 0.829, so it is a
