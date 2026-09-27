@@ -2304,6 +2304,15 @@ Evidence is under
 The DevKit config and slot-7 state were again restored and read back with
 matching SHA256. Further tests wait for the shared DevKit to be free of RE4.
 
+The next dynarec diagnostic is compiled but has not run on hardware. Setting
+`[perf] Mvc2JitMapAfterSeconds` to a positive guest-second count writes
+`mvc2_jit_map.csv` with each live block's executable host range, guest PC,
+guest bytes, run count and FPSCR. It defaults to zero and does no file I/O
+in release use. Capture a PC sample and this map in the *same run*, then
+attribute hot `SH4_TCB` addresses to exact guest blocks before considering
+game-specific emitted-code changes. A map from a different executable or run
+is not valid for attribution.
+
 The optional `VITA_MVC2_STANDALONE` menu-free build boots the fixed disc path
 and removes approximately 1.35 MiB of loaded text/data versus the full UI
 build in one comparison. Its observed mean ratio was about 0.829, so it is a

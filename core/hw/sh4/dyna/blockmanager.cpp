@@ -11,6 +11,9 @@
 #include "oslib/frame_trace.h"
 #include "ngen.h"
 #include "mvc2_native_cache.h"
+#ifdef __vita__
+#include "cfg/cfg.h"
+#endif
 
 #include "../sh4_core.h"
 #include "hw/sh4/sh4_mem.h"
@@ -37,6 +40,39 @@ bool unprotected_pages[RAM_SIZE_MAX/PAGE_SIZE];
 static std::set<RuntimeBlockInfo*> blocks_per_page[RAM_SIZE_MAX/PAGE_SIZE];
 
 static bm_Map blkmap;
+#ifdef __vita__
+static u32 mvc2JitMapSecond;
+static bool mvc2JitMapOptionLoaded;
+static s32 mvc2JitMapAtSecond;
+
+static void mvc2WriteCompactJitMap()
+{
+	const std::string path = get_writable_data_path("mvc2_jit_map.csv");
+	FILE *file = fopen(path.c_str(), "w");
+	if (file == nullptr)
+	{
+		WARN_LOG(DYNAREC, "MVC2 JIT map: cannot open %s", path.c_str());
+		return;
+	}
+	fprintf(file, "host_rx,host_bytes,guest_pc,guest_bytes,runs,fpscr\n");
+	u32 count = 0;
+	for (const auto& entry : blkmap)
+	{
+		const RuntimeBlockInfoPtr& block = entry.second;
+		if (block->code == nullptr || block->host_code_size == 0)
+			continue;
+		fprintf(file, "%08X,%u,%08X,%u,%u,%08X\n",
+			(u32)(uintptr_t)CC_RW2RX((void *)block->code),
+			block->host_code_size, block->vaddr, block->sh4_code_size,
+			block->runs, block->fpu_cfg.full);
+		count++;
+	}
+	const bool writeFailed = ferror(file) != 0;
+	const bool closeFailed = fclose(file) != 0;
+	NOTICE_LOG(DYNAREC, "MVC2 JIT map: blocks=%u io_error=%d path=%s",
+		count, writeFailed || closeFailed, path.c_str());
+}
+#endif
 #ifdef VITA_JIT_RUN_PROFILE
 static u32 jitProfileSecond;
 #endif
@@ -283,6 +319,19 @@ void bm_Periodical_1s()
 {
 	mvc2NativeCachePoll();
 	bm_CleanupDeletedBlocks();
+#ifdef __vita__
+	if (settings.content.gameId == "T1212N")
+	{
+		if (!mvc2JitMapOptionLoaded)
+		{
+			mvc2JitMapAtSecond = cfgLoadInt("perf", "Mvc2JitMapAfterSeconds", 0);
+			mvc2JitMapOptionLoaded = true;
+		}
+		if (mvc2JitMapAtSecond > 0
+				&& ++mvc2JitMapSecond == (u32)mvc2JitMapAtSecond)
+			mvc2WriteCompactJitMap();
+	}
+#endif
 #ifdef VITA_JIT_RUN_PROFILE
 	++jitProfileSecond;
 	if (jitProfileSecond == VITA_JIT_PROFILE_WARMUP_SECONDS)
@@ -313,6 +362,9 @@ void bm_Reset()
 {
 	mvc2NativeCacheReset();
 	bm_CleanupDeletedBlocks();
+#ifdef __vita__
+	mvc2JitMapSecond = 0;
+#endif
 #ifdef VITA_JIT_RUN_PROFILE
 	jitProfileSecond = 0;
 #endif
