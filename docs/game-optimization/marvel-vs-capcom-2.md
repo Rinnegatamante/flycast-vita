@@ -2304,14 +2304,25 @@ Evidence is under
 The DevKit config and slot-7 state were again restored and read back with
 matching SHA256. Further tests wait for the shared DevKit to be free of RE4.
 
-The next dynarec diagnostic is compiled but has not run on hardware. Setting
-`[perf] Mvc2JitMapAfterSeconds` to a positive guest-second count writes
-`mvc2_jit_map.csv` with each live block's executable host range, guest PC,
-guest bytes, run count and FPSCR. It defaults to zero and does no file I/O
-in release use. Capture a PC sample and this map in the *same run*, then
-attribute hot `SH4_TCB` addresses to exact guest blocks before considering
-game-specific emitted-code changes. A map from a different executable or run
-is not valid for attribution.
+An opt-in dynarec diagnostic now writes `mvc2_jit_map.csv` when
+`[perf] Mvc2JitMapAfterSeconds` is positive. It records each live block's
+executable host range, guest PC, guest bytes, run counter and FPSCR, and
+defaults to zero. The run counter is zero in ordinary builds without
+`VITA_JIT_RUN_PROFILE` and must not be used for ranking in that case.
+The same-run 20-second PC sample plus 12-guest-second map dump are under
+`build-vita-cache-resident/devkit-logs/occam/mvc2-jitmap-same-run-20260928/`.
+The map contains 15,129 live blocks and had no write error. The exact ELF's
+`SH4_TCB` range held 4,283,177 samples, of which 4,007,444 (93.56%) map to
+a live block. The remaining 6.44% may include retired blocks or JIT stubs;
+do not force-attribute them. `scripts/analyze-mvc2-jit-samples.ps1` reproduces
+the range join and rejects overlapping host ranges. The top guest PCs are
+`8C0354FE` (231,689 samples), `8C12FDB6` (229,472), `8C12FE18`
+(227,402), `8C03550E` (126,093) and `8C12FE5A` (122,128). The older,
+independent JIT-run profile also ranked those regions highly, but its run
+counts cannot be combined numerically with this capture. The current source
+bytes and intermediate semantics of these blocks still need confirmation
+before any HLE patch or changed code emission. A map from another executable
+or run is invalid for sample attribution.
 
 The optional `VITA_MVC2_STANDALONE` menu-free build boots the fixed disc path
 and removes approximately 1.35 MiB of loaded text/data versus the full UI
