@@ -627,7 +627,8 @@ endif()
 
 if(VITA)
 	target_link_libraries(${PROJECT_NAME} PRIVATE
-			-Wl,--whole-archive pthread -Wl,--no-whole-archive
+			# The Vita compiler's -pthread specs already retain the full archive.
+			-pthread
 			zip
 			z
 			bz2
